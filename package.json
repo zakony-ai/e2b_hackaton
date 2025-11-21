@@ -1,0 +1,22 @@
+{
+  "name": "e2b_hackaton",
+  "version": "1.0.0",
+  "description": "Science research collaborator agent",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "build:client": "pnpm --filter client build",
+    "build:server": "pnpm --filter server build",
+    "dev": "pnpm dev:client",
+    "dev:client": "pnpm --filter client dev",
+    "dev:server": "pnpm --filter server dev",
+    "dev:without-sandbox": "concurrently --names \"server,client\" --prefix-colors \"cyan,magenta\" \"pnpm dev:server\" \"pnpm dev:client\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.18.2"
+}
