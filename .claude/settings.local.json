@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:e2b.dev)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:llmshowto.com)",
+      "WebFetch(domain:www.latent.space)",
+      "WebFetch(domain:console.groq.com)",
+      "WebFetch(domain:hub.docker.com)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
