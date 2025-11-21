@@ -4,13 +4,14 @@
   "description": "Science research collaborator agent",
   "private": true,
   "scripts": {
-    "build": "pnpm -r build",
-    "build:client": "pnpm --filter client build",
-    "build:server": "pnpm --filter server build",
-    "dev": "pnpm dev:client",
-    "dev:client": "pnpm --filter client dev",
-    "dev:server": "pnpm --filter server dev",
-    "dev:without-sandbox": "concurrently --names \"server,client\" --prefix-colors \"cyan,magenta\" \"pnpm dev:server\" \"pnpm dev:client\""
+    "build": "pnpm client:build",
+    "client:build": "pnpm --filter client build",
+    "server:build": "pnpm --filter server build",
+    "dev": "pnpm client:dev",
+    "client:dev": "pnpm --filter client dev",
+    "server:dev": "pnpm --filter server dev",
+    "dev:without-sandbox": "concurrently --names \"server,client\" --prefix-colors \"cyan,magenta\" \"pnpm server:dev\" \"pnpm client:dev\"",
+    "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

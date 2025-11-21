@@ -19,6 +19,7 @@
 
 # production
 /build
+/server-bundle
 
 # misc
 .DS_Store

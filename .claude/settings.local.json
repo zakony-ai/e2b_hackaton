@@ -8,7 +8,10 @@
       "WebFetch(domain:llmshowto.com)",
       "WebFetch(domain:www.latent.space)",
       "WebFetch(domain:console.groq.com)",
-      "WebFetch(domain:hub.docker.com)"
+      "WebFetch(domain:hub.docker.com)",
+      "Bash(cat:*)",
+      "Bash(pnpm build:server:*)",
+      "Bash(pnpm typecheck:*)"
     ],
     "deny": [],
     "ask": []

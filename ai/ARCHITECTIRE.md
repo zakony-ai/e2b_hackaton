@@ -17,16 +17,16 @@ In this project we will have "multirepo"
 
 Commands:
   - for client (nextjs):
-    - build `pnpm build:client` (next build)
-    - dev `pnpm dev:client`
-    - dev but using local hono server instead of spinnig it up in a sandbox `pnpm dev:client --without-sandbox`
+    - build `pnpm client:build` (next build)
+    - dev `pnpm client:dev`
+    - dev but using local hono server instead of spinnig it up in a sandbox `pnpm client:dev --without-sandbox`
   - for server (hono):
-    - build `pnpm build:server`
-    - testing in dev (locally without sandbox) `pnpm dev:server`
+    - build `pnpm server:build`
+    - testing in dev (locally without sandbox) `pnpm server:dev`
   - combined
     - `pnpm build` - builds both
-    - `pnpm dev` - runs dev:client (server not needed as that will be ran inside sandbox)
-    - `pnpm dev:without-sandbox` - runs dev:client --without-sandbox and dev:server using concurrently
+    - `pnpm dev` - runs client:dev (server not needed as that will be ran inside sandbox)
+    - `pnpm dev:without-sandbox` - runs client:dev --without-sandbox and server:dev using concurrently
     
 ### Components overview
 NextJS FE
