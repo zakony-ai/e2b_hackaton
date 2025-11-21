@@ -37,13 +37,13 @@ NextJS FE
       - spins up e2b sandbox and rans the compiled hono server, which is waiting for /talk request
     - `sandbox/kill`: `{ sandboxId: string } => {}`
       - kills the sandbox
-    - `sandbox/recreate` payload: `{ messages: Messages, papers: string[], oldSandboxId: string } => { agentUrl: string, sandboxId }`
+    - `sandbox/recreate`: `{ messages: Messages, papers: string[], oldSandboxId: string } => { agentUrl: string, sandboxId }`
       - checks whether the old sandbox exists, if it does, logs a warning with number of SSE connections it has and whether agent was talking or waiting, then kills it
       - spins up the e2b sandvox creates the messages.ndjson in the sandbox and recreates the downloaded papers .md files and run the hono server as in /create
   - calls agentUrl inside sandbox (see. hono server below for details)
-    - `agent/talk`
-    - `agent/sorryiwasntlistening`
-    - `agent/stfu`
+    - `agent/talk`: `{ user_prompt: string } => sse-connection-stuff` | busy
+    - `agent/sorryiwasntlistening`: `{} => { messages } & see-connection-stuff`
+    - `agent/stfu`: `{} => {}`
 
 Hono server
     - uses `openai` package (imports OpenAI and types, etc.)
