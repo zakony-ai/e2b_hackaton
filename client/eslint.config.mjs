@@ -14,6 +14,14 @@ const eslintConfig = defineConfig([
   ]),
   ...nextVitals,
   ...nextTs,
+  // Add explicit tsconfigRootDir for monorepo support
+  {
+    languageOptions: {
+      parserOptions: {
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
 ]);
 
 export default eslintConfig;
