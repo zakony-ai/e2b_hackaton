@@ -38,10 +38,21 @@ interface Conversation {
 	sandboxId?: string;
 }
 
-interface Message {
-	role: "user" | "assistant";
-	content: string;
+interface ToolCall {
+	id: string;
+	name: string;
+	arguments: string;
+	result: string | null; // null = waiting for result, string = received
 }
+
+type Message =
+	| { role: "user"; content: string }
+	| {
+			role: "assistant";
+			content: string;
+			tool_calls?: ToolCall[];
+			isStreaming: boolean;
+	  };
 
 interface LogEntry {
 	timestamp: string;
@@ -55,24 +66,21 @@ interface State {
 	conversations: Conversation[];
 	currentConversation: Conversation | null;
 	messages: Message[];
-	isStreaming: boolean;
 	logsDialogOpen: boolean;
 	logs: LogEntry[];
 	logsLoading: boolean;
 	logsError: string | null;
-	currentAssistantMessage: string;
 }
 
 // Actions
 type Action =
 	| { type: "ConversationsLoaded"; conversations: Conversation[] }
 	| { type: "SubmitPrompt"; text: string }
-	| { type: "UserMessageAdded"; message: Message }
-	| { type: "NewConversationCreated"; conversation: Conversation }
 	| { type: "SandboxCreated"; agentUrl: string; sandboxId: string }
-	| { type: "StreamingStarted" }
 	| { type: "AssistantMessageStarted" }
-	| { type: "StreamingDelta"; content: string }
+	| { type: "TextDelta"; content: string }
+	| { type: "ToolCallCompleted"; id: string; name: string; arguments: string }
+	| { type: "ToolResultReceived"; id: string; result: string }
 	| { type: "StreamingCompleted" }
 	| { type: "StreamingError"; error: string }
 	| { type: "SelectConversation"; conversation: Conversation }
@@ -90,12 +98,10 @@ const initialState: State = {
 	conversations: [],
 	currentConversation: null,
 	messages: [],
-	isStreaming: false,
 	logsDialogOpen: false,
 	logs: [],
 	logsLoading: false,
 	logsError: null,
-	currentAssistantMessage: "",
 };
 
 // Commands
@@ -142,6 +148,9 @@ const createSandboxCommand = (): Command<Action> => async () => {
 const streamSubscription = (agentUrl: string, userPrompt: string) => (dispatch: (action: Action) => void) => {
 	(async () => {
 		try {
+			// Create empty assistant message at start
+			dispatch({ type: "AssistantMessageStarted" });
+
 			const response = await fetch(`${agentUrl}/agent/talk`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -171,8 +180,23 @@ const streamSubscription = (agentUrl: string, userPrompt: string) => (dispatch: 
 						const data = line.slice(6);
 						try {
 							const parsed = JSON.parse(data);
-							if (parsed.type === "delta") {
-								dispatch({ type: "StreamingDelta", content: parsed.content });
+							if (parsed.type === "text_delta") {
+								dispatch({ type: "TextDelta", content: parsed.content });
+							} else if (parsed.type === "tool_call_complete") {
+								dispatch({
+									type: "ToolCallCompleted",
+									id: parsed.call_id || parsed.id,
+									name: parsed.name,
+									arguments: parsed.arguments,
+								});
+							} else if (parsed.type === "tool_done") {
+								if (parsed.item?.type === "function_call_output") {
+									dispatch({
+										type: "ToolResultReceived",
+										id: parsed.item.call_id,
+										result: parsed.item.output,
+									});
+								}
 							} else if (parsed.type === "done") {
 								dispatch({ type: "StreamingCompleted" });
 							} else if (parsed.type === "error") {
@@ -254,6 +278,13 @@ const fetchLogsCommand = (sandboxId: string): Command<Action> => async () => {
 	}
 };
 
+// Helper function to find the streaming assistant message
+function findStreamingAssistantIndex(messages: Message[]): number {
+	return messages.findLastIndex(
+		(msg) => msg.role === "assistant" && msg.isStreaming
+	);
+}
+
 // Reducer
 function reducer(state: State, action: Action): StateWithSideEffects<State, Action> {
 	switch (action.type) {
@@ -272,7 +303,6 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 					{
 						...state,
 						messages: newMessages,
-						isStreaming: true,
 					},
 					createSandboxCommand(),
 				];
@@ -281,7 +311,6 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 					{
 						...state,
 						messages: newMessages,
-						isStreaming: true,
 					},
 					[],
 					streamSubscription(state.currentConversation.agentUrl, userPrompt),
@@ -344,47 +373,104 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 		case "AssistantMessageStarted":
 			return {
 				...state,
-				messages: [...state.messages, { role: "assistant", content: "" }],
-				currentAssistantMessage: "",
+				messages: [...state.messages, { role: "assistant", content: "", isStreaming: true }],
 			};
 
-		case "StreamingDelta": {
-			const newAssistantMessage = state.currentAssistantMessage + action.content;
-			const updatedMessages = [...state.messages];
-			if (updatedMessages.length > 0 && updatedMessages[updatedMessages.length - 1].role === "assistant") {
-				updatedMessages[updatedMessages.length - 1] = {
-					role: "assistant",
-					content: newAssistantMessage,
+		case "TextDelta": {
+			const messages = [...state.messages];
+			const streamingIdx = findStreamingAssistantIndex(messages);
+
+			if (streamingIdx !== -1) {
+				messages[streamingIdx] = {
+					...messages[streamingIdx],
+					content: messages[streamingIdx].content + action.content,
 				};
-			} else {
-				updatedMessages.push({ role: "assistant", content: newAssistantMessage });
 			}
 
-			return {
-				...state,
-				messages: updatedMessages,
-				currentAssistantMessage: newAssistantMessage,
-			};
+			return { ...state, messages };
 		}
 
-		case "StreamingCompleted":
-			return {
-				...state,
-				isStreaming: false,
-				currentAssistantMessage: "",
-			};
+		case "ToolCallCompleted": {
+			const messages = [...state.messages];
+			const streamingIdx = findStreamingAssistantIndex(messages);
+
+			if (streamingIdx !== -1) {
+				const msg = messages[streamingIdx];
+				if (msg.role === "assistant") {
+					const tool_calls = msg.tool_calls || [];
+
+					messages[streamingIdx] = {
+						...msg,
+						tool_calls: [
+							...tool_calls,
+							{
+								id: action.id,
+								name: action.name,
+								arguments: action.arguments,
+								result: null,
+							},
+						],
+					};
+				}
+			}
+
+			return { ...state, messages };
+		}
+
+		case "ToolResultReceived": {
+			const messages = [...state.messages];
+			const streamingIdx = findStreamingAssistantIndex(messages);
+
+			if (streamingIdx !== -1) {
+				const msg = messages[streamingIdx];
+				if (msg.role === "assistant" && msg.tool_calls) {
+					const tool_calls = msg.tool_calls.map((tc: ToolCall) =>
+						tc.id === action.id ? { ...tc, result: action.result } : tc,
+					);
+
+					messages[streamingIdx] = {
+						...msg,
+						tool_calls,
+					};
+				}
+			}
+
+			return { ...state, messages };
+		}
+
+		case "StreamingCompleted": {
+			const messages = [...state.messages];
+			const streamingIdx = findStreamingAssistantIndex(messages);
+
+			if (streamingIdx !== -1) {
+				const msg = messages[streamingIdx];
+				if (msg.role === "assistant") {
+					messages[streamingIdx] = {
+						...msg,
+						isStreaming: false,
+					};
+				}
+			}
+
+			return { ...state, messages };
+		}
 
 		case "StreamingError": {
-			const errorMessage: Message = {
-				role: "assistant",
-				content: `Error: ${action.error}`,
-			};
-			return {
-				...state,
-				messages: [...state.messages, errorMessage],
-				isStreaming: false,
-				currentAssistantMessage: "",
-			};
+			const messages = [...state.messages];
+			const streamingIdx = findStreamingAssistantIndex(messages);
+
+			if (streamingIdx !== -1) {
+				const msg = messages[streamingIdx];
+				if (msg.role === "assistant") {
+					messages[streamingIdx] = {
+						...msg,
+						content: msg.content + `\n\nError: ${action.error}`,
+						isStreaming: false,
+					};
+				}
+			}
+
+			return { ...state, messages };
 		}
 
 		case "SelectConversation":
@@ -564,8 +650,42 @@ export default function Home() {
 								>
 									<div className="font-semibold text-sm">
 										{msg.role === "user" ? "You" : "Assistant"}
+										{msg.role === "assistant" && msg.isStreaming && " (streaming...)"}
 									</div>
-									<div className="mt-1 whitespace-pre-wrap">{msg.content}</div>
+
+									{/* Text content */}
+									{msg.content && (
+										<div className="mt-1 whitespace-pre-wrap">{msg.content}</div>
+									)}
+
+									{/* Tool calls (assistant only) */}
+									{msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0 && (
+										<div className="mt-2 space-y-2">
+											{msg.tool_calls.map((tool, toolIdx) => (
+												<div
+													key={toolIdx}
+													className="border-l-2 border-purple-500 bg-purple-50 dark:bg-purple-900/20 pl-3 py-2 rounded"
+												>
+													<div className="font-mono text-sm font-semibold">
+														🔧 {tool.name}
+													</div>
+													<div className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-mono">
+														{tool.arguments}
+													</div>
+													{tool.result === null ? (
+														<div className="text-xs text-yellow-600 dark:text-yellow-400 mt-1 font-semibold">
+															⏳ Executing...
+														</div>
+													) : (
+														<div className="text-xs text-green-700 dark:text-green-400 mt-1 max-h-32 overflow-auto bg-white dark:bg-gray-800 p-2 rounded border">
+															<div className="font-semibold mb-1">✅ Result:</div>
+															<pre className="whitespace-pre-wrap">{tool.result}</pre>
+														</div>
+													)}
+												</div>
+											))}
+										</div>
+									)}
 								</div>
 							))}
 						</div>
@@ -575,12 +695,18 @@ export default function Home() {
 								<PromptInputBody>
 									<PromptInputTextarea
 										placeholder="Type your research question..."
-										disabled={state.isStreaming}
+										disabled={state.messages.some(
+											(m) => m.role === "assistant" && m.isStreaming,
+										)}
 									/>
 								</PromptInputBody>
 								<PromptInputFooter>
 									<div />
-									<PromptInputSubmit disabled={state.isStreaming} />
+									<PromptInputSubmit
+										disabled={state.messages.some(
+											(m) => m.role === "assistant" && m.isStreaming,
+										)}
+									/>
 								</PromptInputFooter>
 							</PromptInput>
 						</div>

@@ -1,3 +1,4 @@
+/* eslint-disable */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { match } from "ts-pattern";
 
@@ -140,7 +141,7 @@ export function useReducerWithCommands<State, Action>(
     } else {
       dispatch(result);
     }
-  }, []); // eslint-disable-line
+  }, []);
 
   useEffect(() => {
     if (initialCommand) {

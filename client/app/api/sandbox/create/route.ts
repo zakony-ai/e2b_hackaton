@@ -28,12 +28,22 @@ export async function POST() {
 
 		log({ level: "info", message: "Creating E2B sandbox" });
 
-		// Create E2B sandbox
+		// Create E2B sandbox with arXiv MCP server
 		const sandbox = await Sandbox.create({
 			apiKey: e2bApiKey,
+			mcp: {
+				arxiv: {
+					storagePath: "/home/user/papers",
+				},
+			},
+			timeoutMs: 600_000, // 10 minutes
 		});
 
-		log({ level: "info", message: "Sandbox created", sandboxId: sandbox.sandboxId });
+		log({
+			level: "info",
+			message: "Sandbox created",
+			sandboxId: sandbox.sandboxId,
+		});
 
 		// Path to the bundled server (copied during build)
 		const serverBundlePath = path.join(
@@ -48,17 +58,34 @@ export async function POST() {
 			fs.readFileSync(serverBundlePath, "utf-8"),
 		);
 
-		log({ level: "info", message: "Server bundle uploaded", sandboxId: sandbox.sandboxId });
+		log({
+			level: "info",
+			message: "Server bundle uploaded",
+			sandboxId: sandbox.sandboxId,
+		});
 
 		// Create logs directory
 		await sandbox.commands.run("mkdir -p /home/user/logs");
-		log({ level: "info", message: "Logs directory created", sandboxId: sandbox.sandboxId });
+		log({
+			level: "info",
+			message: "Logs directory created",
+			sandboxId: sandbox.sandboxId,
+		});
+
+		// Get MCP URL and token - pass as environment variables to the server
+		const mcpUrl = sandbox.getMcpUrl();
+		const mcpToken = await sandbox.getMcpToken();
 
 		// Start the bundled server immediately - no npm install needed!
 		// Redirect stdout and stderr to NDJSON log file
-		log({ level: "info", message: "Starting server in sandbox", sandboxId: sandbox.sandboxId });
+		// Pass MCP credentials as environment variables
+		log({
+			level: "info",
+			message: "Starting server in sandbox",
+			sandboxId: sandbox.sandboxId,
+		});
 		sandbox.commands.run(
-			`GROQ_API_KEY=${groqApiKey} node /home/user/server.mjs >> /home/user/logs/hono.ndjson 2>&1`,
+			`GROQ_API_KEY=${groqApiKey} MCP_URL=${mcpUrl} MCP_TOKEN=${mcpToken} node /home/user/server.mjs >> /home/user/logs/hono.ndjson 2>&1`,
 			{
 				background: true,
 			},
