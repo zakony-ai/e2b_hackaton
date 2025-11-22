@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
     const { sandboxId } = await request.json();
 
     if (!sandboxId) {
-      log('error', 'sandboxId is required');
+      log({ level: 'error', message: 'sandboxId is required' });
       return NextResponse.json(
         { error: 'sandboxId is required' },
         { status: 400 }
@@ -17,25 +17,27 @@ export async function POST(request: NextRequest) {
     const apiKey = process.env.E2B_API_KEY;
 
     if (!apiKey) {
-      log('error', 'E2B_API_KEY not configured');
+      log({ level: 'error', message: 'E2B_API_KEY not configured' });
       return NextResponse.json(
         { error: 'E2B_API_KEY not configured' },
         { status: 500 }
       );
     }
 
-    log('info', 'Killing sandbox', { sandboxId });
+    log({ level: 'info', message: 'Killing sandbox', sandboxId });
 
     // Connect to the existing sandbox and kill it
     const sandbox = await Sandbox.connect(sandboxId, { apiKey });
     await sandbox.kill();
 
-    log('info', 'Sandbox killed successfully', { sandboxId });
+    log({ level: 'info', message: 'Sandbox killed successfully', sandboxId });
 
     return NextResponse.json({ success: true });
 
   } catch (error) {
-    log('error', 'Failed to kill sandbox', {
+    log({
+      level: 'error',
+      message: 'Failed to kill sandbox',
       errorMessage: error instanceof Error ? error.message : String(error),
       errorStack: error instanceof Error ? error.stack : undefined,
     });

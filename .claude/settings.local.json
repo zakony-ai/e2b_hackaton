@@ -11,7 +11,9 @@
       "WebFetch(domain:hub.docker.com)",
       "Bash(cat:*)",
       "Bash(pnpm build:server:*)",
-      "Bash(pnpm typecheck:*)"
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm lint:*)"
     ],
     "deny": [],
     "ask": []

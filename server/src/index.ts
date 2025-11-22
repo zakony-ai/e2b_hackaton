@@ -13,7 +13,7 @@ import { log } from './logger';
 const app = new Hono();
 
 // Server state
-let agentStream: AsyncIterable<any> | null = null;
+let agentStream: AsyncIterable<unknown> | null = null;
 const sseConnections: Set<WritableStreamDefaultWriter> = new Set();
 
 // Helper to check if agent is talking
@@ -38,22 +38,22 @@ async function readMessagesFromFile(): Promise<Array<{ role: string; content: st
       .split('\n')
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line));
-  } catch (error) {
+  } catch {
     // File doesn't exist yet or is empty
     return [];
   }
 }
 
 app.get('/healthcheck', (c) => {
-  log('info', 'Healthcheck request');
+  log({ level: 'info', message: 'Healthcheck request' });
   return c.json({ status: 'ok', message: 'Server is up and running' });
 });
 
 app.post('/agent/talk', async (c) => {
-  log('info', 'Agent talk request received');
+  log({ level: 'info', message: 'Agent talk request received' });
 
   if (isAgentTalking()) {
-    log('warn', 'Agent is already talking');
+    log({ level: 'warn', message: 'Agent is already talking' });
     return c.json(
       { error: 'Agent is already talking. Use /agent/sorryiwasntlistening to reconnect.' },
       { status: 409 }
@@ -63,11 +63,11 @@ app.post('/agent/talk', async (c) => {
   const { user_prompt } = await c.req.json();
 
   if (!user_prompt) {
-    log('error', 'Missing user_prompt');
+    log({ level: 'error', message: 'Missing user_prompt' });
     return c.json({ error: 'user_prompt is required' }, { status: 400 });
   }
 
-  log('info', 'Processing user prompt', { promptLength: user_prompt.length });
+  log({ level: 'info', message: 'Processing user prompt', promptLength: user_prompt.length });
 
   // Save user message
   await appendMessageToFile({ role: 'user', content: user_prompt });
@@ -78,7 +78,7 @@ app.post('/agent/talk', async (c) => {
   // Initialize OpenAI client (using Groq endpoint)
   const groqApiKey = process.env.GROQ_API_KEY;
   if (!groqApiKey) {
-    log('error', 'GROQ_API_KEY not configured');
+    log({ level: 'error', message: 'GROQ_API_KEY not configured' });
     return c.json({ error: 'GROQ_API_KEY not configured' }, { status: 500 });
   }
 
@@ -87,7 +87,7 @@ app.post('/agent/talk', async (c) => {
     baseURL: 'https://api.groq.com/openai/v1',
   });
 
-  log('info', 'Starting Groq stream', { model: 'moonshotai/kimi-k2-instruct-0905', messageCount: messages.length });
+  log({ level: 'info', message: 'Starting Groq stream', model: 'moonshotai/kimi-k2-instruct-0905', messageCount: messages.length });
 
   // Start streaming response from Groq
   const stream = await client.chat.completions.create({
@@ -96,7 +96,7 @@ app.post('/agent/talk', async (c) => {
     stream: true,
   });
 
-  agentStream = stream as any;
+  agentStream = stream as unknown as AsyncIterable<unknown>;
 
   // Stream SSE to client
   return streamSSE(c, async (sseStream) => {
@@ -117,7 +117,7 @@ app.post('/agent/talk', async (c) => {
       // Stream completed - save the full assistant message
       await appendMessageToFile({ role: 'assistant', content: fullMessage });
 
-      log('info', 'Stream completed', { messageLength: fullMessage.length });
+      log({ level: 'info', message: 'Stream completed', messageLength: fullMessage.length });
 
       // Send completion event
       await sseStream.writeSSE({
@@ -125,7 +125,9 @@ app.post('/agent/talk', async (c) => {
       });
 
     } catch (error) {
-      log('error', 'Streaming error', {
+      log({
+        level: 'error',
+        message: 'Streaming error',
         errorMessage: error instanceof Error ? error.message : String(error),
         errorStack: error instanceof Error ? error.stack : undefined,
       });
@@ -158,10 +160,10 @@ app.post('/agent/sorryiwasntlistening', async (c) => {
 });
 
 app.post('/agent/stfu', async (c) => {
-  log('info', 'Agent stfu request received');
+  log({ level: 'info', message: 'Agent stfu request received' });
 
   if (!isAgentTalking()) {
-    log('warn', 'Agent is not talking');
+    log({ level: 'warn', message: 'Agent is not talking' });
     return c.json(
       { error: 'Agent is not talking.' },
       { status: 400 }
@@ -175,24 +177,24 @@ app.post('/agent/stfu', async (c) => {
   for (const writer of sseConnections) {
     try {
       await writer.close();
-    } catch (e) {
+    } catch {
       // Ignore errors when closing
     }
   }
   sseConnections.clear();
 
-  log('info', 'Agent stopped successfully');
+  log({ level: 'info', message: 'Agent stopped successfully' });
 
   return c.json({ success: true });
 });
 
 const port = parseInt(process.env.PORT || '3001');
 
-log('info', 'Server starting', { port });
+log({ level: 'info', message: 'Server starting', port });
 
 serve({
   fetch: app.fetch,
   port,
 });
 
-log('info', 'Server is running', { port, url: `http://localhost:${port}` });
+log({ level: 'info', message: 'Server is running', port, url: `http://localhost:${port}` });

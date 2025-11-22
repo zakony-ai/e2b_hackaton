@@ -15,7 +15,7 @@ try {
     cwd: rootDir,
     stdio: 'inherit',
   });
-} catch (error) {
+} catch {
   console.error('❌ Failed to build server');
   process.exit(1);
 }

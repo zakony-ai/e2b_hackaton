@@ -1,3 +1,6 @@
+/* eslint-disable */
+// This file is from shadcn registry ai-elements
+// https://ui.shadcn.com/docs/components/ai-elements
 "use client";
 
 import { Button } from "@/components/ui/button";

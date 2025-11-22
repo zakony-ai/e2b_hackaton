@@ -7,7 +7,7 @@ export async function GET(request: NextRequest) {
     const sandboxId = request.nextUrl.searchParams.get('sandboxId');
 
     if (!sandboxId) {
-      log('error', 'sandboxId is required');
+      log({ level: 'error', message: 'sandboxId is required' });
       return NextResponse.json(
         { error: 'sandboxId is required' },
         { status: 400 }
@@ -17,14 +17,14 @@ export async function GET(request: NextRequest) {
     const apiKey = process.env.E2B_API_KEY;
 
     if (!apiKey) {
-      log('error', 'E2B_API_KEY not configured');
+      log({ level: 'error', message: 'E2B_API_KEY not configured' });
       return NextResponse.json(
         { error: 'E2B_API_KEY not configured' },
         { status: 500 }
       );
     }
 
-    log('info', 'Fetching logs', { sandboxId });
+    log({ level: 'info', message: 'Fetching logs', sandboxId });
 
     // Connect to the existing sandbox
     const sandbox = await Sandbox.connect(sandboxId, { apiKey });
@@ -33,13 +33,15 @@ export async function GET(request: NextRequest) {
     let logsContent = '';
     try {
       logsContent = await sandbox.files.read('/home/user/logs/hono.ndjson');
-    } catch (error) {
+    } catch {
       // If file doesn't exist yet, return empty string
-      log('warn', 'Log file not found or empty', { sandboxId });
+      log({ level: 'warn', message: 'Log file not found or empty', sandboxId });
       logsContent = '';
     }
 
-    log('info', 'Logs fetched successfully', {
+    log({
+      level: 'info',
+      message: 'Logs fetched successfully',
       sandboxId,
       logSize: logsContent.length
     });
@@ -50,7 +52,9 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    log('error', 'Failed to fetch logs', {
+    log({
+      level: 'error',
+      message: 'Failed to fetch logs',
       errorMessage: error instanceof Error ? error.message : String(error),
       errorStack: error instanceof Error ? error.stack : undefined,
     });

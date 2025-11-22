@@ -11,7 +11,9 @@
     "client:dev": "pnpm --filter client dev",
     "server:dev": "pnpm --filter server dev",
     "dev:without-sandbox": "concurrently --names \"server,client\" --prefix-colors \"cyan,magenta\" \"pnpm server:dev\" \"pnpm client:dev\"",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "typecheck": "pnpm -r --no-bail --if-present typecheck",
+    "lint": "pnpm -r --no-bail --if-present lint",
+    "lint:fix": "pnpm -r --if-present lint:fix"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

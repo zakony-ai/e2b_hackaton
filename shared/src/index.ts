@@ -4,9 +4,8 @@ export type Message = {
   content: string;
 };
 
-export interface LogEntry {
+export type LogEntry = {
   timestamp: string;
   level: 'info' | 'warn' | 'error';
   message: string;
-  [key: string]: any;
-}
+} & Record<string, unknown>;

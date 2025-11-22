@@ -1,5 +1,4 @@
 "use client";
-import { useState, useEffect } from "react";
 import { nanoid } from "nanoid";
 import {
 	ResizablePanelGroup,
@@ -20,7 +19,6 @@ import {
 	DialogDescription,
 	DialogHeader,
 	DialogTitle,
-	DialogTrigger,
 } from "@/components/ui/dialog";
 import {
 	Table,
@@ -31,6 +29,7 @@ import {
 	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
+import { useReducerWithCommands, type Command, type StateWithSideEffects } from "@/lib/react";
 
 interface Conversation {
 	id: string;
@@ -48,106 +47,100 @@ interface LogEntry {
 	timestamp: string;
 	level: "info" | "warn" | "error";
 	message: string;
-	[key: string]: any;
+	[key: string]: unknown;
 }
 
-export default function Home() {
-	const [conversations, setConversations] = useState<Conversation[]>([]);
-	const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null);
-	const [messages, setMessages] = useState<Message[]>([]);
-	const [isStreaming, setIsStreaming] = useState(false);
-	const [logsDialogOpen, setLogsDialogOpen] = useState(false);
-	const [logs, setLogs] = useState<LogEntry[]>([]);
-	const [logsLoading, setLogsLoading] = useState(false);
-	const [logsError, setLogsError] = useState<string | null>(null);
+// State
+interface State {
+	conversations: Conversation[];
+	currentConversation: Conversation | null;
+	messages: Message[];
+	isStreaming: boolean;
+	logsDialogOpen: boolean;
+	logs: LogEntry[];
+	logsLoading: boolean;
+	logsError: string | null;
+	currentAssistantMessage: string;
+}
 
-	// Load conversations from localStorage on mount
-	useEffect(() => {
-		const stored = localStorage.getItem("conversations");
-		if (stored) {
-			try {
-				setConversations(JSON.parse(stored));
-			} catch (e) {
-				console.error("Failed to parse conversations from localStorage", e);
-			}
+// Actions
+type Action =
+	| { type: "ConversationsLoaded"; conversations: Conversation[] }
+	| { type: "SubmitPrompt"; text: string }
+	| { type: "UserMessageAdded"; message: Message }
+	| { type: "NewConversationCreated"; conversation: Conversation }
+	| { type: "SandboxCreated"; agentUrl: string; sandboxId: string }
+	| { type: "StreamingStarted" }
+	| { type: "AssistantMessageStarted" }
+	| { type: "StreamingDelta"; content: string }
+	| { type: "StreamingCompleted" }
+	| { type: "StreamingError"; error: string }
+	| { type: "SelectConversation"; conversation: Conversation }
+	| { type: "KillSandbox" }
+	| { type: "SandboxKilled" }
+	| { type: "SandboxKillError"; error: string }
+	| { type: "OpenLogsDialog" }
+	| { type: "CloseLogsDialog" }
+	| { type: "FetchLogs" }
+	| { type: "LogsLoaded"; logs: LogEntry[] }
+	| { type: "LogsError"; error: string };
+
+// Initial state
+const initialState: State = {
+	conversations: [],
+	currentConversation: null,
+	messages: [],
+	isStreaming: false,
+	logsDialogOpen: false,
+	logs: [],
+	logsLoading: false,
+	logsError: null,
+	currentAssistantMessage: "",
+};
+
+// Commands
+const loadConversationsFromStorage = (): Command<Action> => async () => {
+	const stored = localStorage.getItem("conversations");
+	if (stored) {
+		try {
+			const conversations = JSON.parse(stored);
+			return { type: "ConversationsLoaded", conversations };
+		} catch {
+			return { type: "ConversationsLoaded", conversations: [] };
 		}
-	}, []);
+	}
+	return { type: "ConversationsLoaded", conversations: [] };
+};
 
-	// Save conversations to localStorage whenever they change
-	useEffect(() => {
-		if (conversations.length > 0) {
-			localStorage.setItem("conversations", JSON.stringify(conversations));
+const saveConversationsToStorage = (conversations: Conversation[]): Command<Action> => () => {
+	if (conversations.length > 0) {
+		localStorage.setItem("conversations", JSON.stringify(conversations));
+	}
+	return { type: "ConversationsLoaded", conversations };
+};
+
+const createSandboxCommand = (): Command<Action> => async () => {
+	try {
+		const createResponse = await fetch("/api/sandbox/create", {
+			method: "POST",
+		});
+
+		if (!createResponse.ok) {
+			throw new Error("Failed to create sandbox");
 		}
-	}, [conversations]);
 
-	const handleSubmit = async (promptMessage: { text: string }) => {
-		const userPrompt = promptMessage.text.trim();
-		if (!userPrompt) return;
+		const { agentUrl, sandboxId } = await createResponse.json();
+		return { type: "SandboxCreated", agentUrl, sandboxId };
+	} catch (error) {
+		return {
+			type: "StreamingError",
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
 
-		// Add user message to UI
-		const userMessage: Message = { role: "user", content: userPrompt };
-		setMessages((prev) => [...prev, userMessage]);
-
-		// If no current conversation, create a new one
-		if (!currentConversation) {
-			const conversationId = nanoid();
-			const newConversation: Conversation = {
-				id: conversationId,
-				first_prompt: userPrompt,
-			};
-
-			// Step 1: Create sandbox
-			setIsStreaming(true);
-			try {
-				const createResponse = await fetch("/api/sandbox/create", {
-					method: "POST",
-				});
-
-				if (!createResponse.ok) {
-					throw new Error("Failed to create sandbox");
-				}
-
-				const { agentUrl, sandboxId } = await createResponse.json();
-
-				newConversation.agentUrl = agentUrl;
-				newConversation.sandboxId = sandboxId;
-
-				setConversations((prev) => [...prev, newConversation]);
-				setCurrentConversation(newConversation);
-
-				// Step 2: Call agent/talk
-				await streamAgentResponse(agentUrl, userPrompt);
-			} catch (error) {
-				console.error("Error:", error);
-				setMessages((prev) => [
-					...prev,
-					{
-						role: "assistant",
-						content: `Error: ${error instanceof Error ? error.message : String(error)}`,
-					},
-				]);
-				setIsStreaming(false);
-			}
-		} else if (currentConversation.agentUrl) {
-			// Use existing conversation
-			setIsStreaming(true);
-			try {
-				await streamAgentResponse(currentConversation.agentUrl, userPrompt);
-			} catch (error) {
-				console.error("Error:", error);
-				setMessages((prev) => [
-					...prev,
-					{
-						role: "assistant",
-						content: `Error: ${error instanceof Error ? error.message : String(error)}`,
-					},
-				]);
-				setIsStreaming(false);
-			}
-		}
-	};
-
-	const streamAgentResponse = async (agentUrl: string, userPrompt: string) => {
+const streamSubscription = (agentUrl: string, userPrompt: string) => (dispatch: (action: Action) => void) => {
+	(async () => {
 		try {
 			const response = await fetch(`${agentUrl}/agent/talk`, {
 				method: "POST",
@@ -165,10 +158,6 @@ export default function Home() {
 			}
 
 			const decoder = new TextDecoder();
-			let assistantMessage = "";
-
-			// Add empty assistant message that we'll update
-			setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
 			while (true) {
 				const { done, value } = await reader.read();
@@ -183,104 +172,317 @@ export default function Home() {
 						try {
 							const parsed = JSON.parse(data);
 							if (parsed.type === "delta") {
-								assistantMessage += parsed.content;
-								// Update the last message
-								setMessages((prev) => {
-									const updated = [...prev];
-									updated[updated.length - 1] = {
-										role: "assistant",
-										content: assistantMessage,
-									};
-									return updated;
-								});
+								dispatch({ type: "StreamingDelta", content: parsed.content });
 							} else if (parsed.type === "done") {
-								setIsStreaming(false);
+								dispatch({ type: "StreamingCompleted" });
 							} else if (parsed.type === "error") {
-								console.error("Stream error:", parsed.message);
-								setIsStreaming(false);
+								dispatch({ type: "StreamingError", error: parsed.message });
 							}
-						} catch (e) {
-							// Ignore JSON parse errors for non-JSON lines
+						} catch {
+							// Ignore JSON parse errors
 						}
 					}
 				}
 			}
-
-			setIsStreaming(false);
 		} catch (error) {
-			console.error("Streaming error:", error);
-			setIsStreaming(false);
-			throw error;
-		}
-	};
-
-	const handleKillSandbox = async () => {
-		if (!currentConversation?.sandboxId) return;
-
-		try {
-			const response = await fetch("/api/sandbox/kill", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ sandboxId: currentConversation.sandboxId }),
+			dispatch({
+				type: "StreamingError",
+				error: error instanceof Error ? error.message : String(error),
 			});
+		}
+	})();
+};
 
-			if (!response.ok) {
-				throw new Error("Failed to kill sandbox");
+const killSandboxCommand = (sandboxId: string): Command<Action> => async () => {
+	try {
+		const response = await fetch("/api/sandbox/kill", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ sandboxId }),
+		});
+
+		if (!response.ok) {
+			throw new Error("Failed to kill sandbox");
+		}
+
+		return { type: "SandboxKilled" };
+	} catch (error) {
+		return {
+			type: "SandboxKillError",
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+};
+
+const fetchLogsCommand = (sandboxId: string): Command<Action> => async () => {
+	try {
+		const response = await fetch(`/api/sandbox/logs?sandboxId=${sandboxId}`);
+
+		if (!response.ok) {
+			const errorData = await response.json();
+			throw new Error(errorData.error || "Failed to fetch logs");
+		}
+
+		const data = await response.json();
+
+		if (data.logs) {
+			const logLines = data.logs
+				.trim()
+				.split("\n")
+				.filter((line: string) => line.length > 0);
+
+			const parsedLogs: LogEntry[] = [];
+
+			for (const line of logLines) {
+				try {
+					const logEntry = JSON.parse(line);
+					parsedLogs.push(logEntry);
+				} catch {
+					console.error("Failed to parse log line:", line);
+				}
 			}
 
-			// Clear current conversation
-			setCurrentConversation(null);
-			setMessages([]);
-			alert(`Sandbox ${currentConversation.sandboxId} killed successfully`);
-		} catch (error) {
-			console.error("Error killing sandbox:", error);
-			alert(`Error killing sandbox: ${error instanceof Error ? error.message : String(error)}`);
+			return { type: "LogsLoaded", logs: parsedLogs };
+		} else {
+			return { type: "LogsLoaded", logs: [] };
 		}
+	} catch (err) {
+		return {
+			type: "LogsError",
+			error: err instanceof Error ? err.message : "Unknown error",
+		};
+	}
+};
+
+// Reducer
+function reducer(state: State, action: Action): StateWithSideEffects<State, Action> {
+	switch (action.type) {
+		case "ConversationsLoaded":
+			return { ...state, conversations: action.conversations };
+
+		case "SubmitPrompt": {
+			const userPrompt = action.text.trim();
+			if (!userPrompt) return state;
+
+			const userMessage: Message = { role: "user", content: userPrompt };
+			const newMessages = [...state.messages, userMessage];
+
+			if (!state.currentConversation) {
+				return [
+					{
+						...state,
+						messages: newMessages,
+						isStreaming: true,
+					},
+					createSandboxCommand(),
+				];
+			} else if (state.currentConversation.agentUrl) {
+				return [
+					{
+						...state,
+						messages: newMessages,
+						isStreaming: true,
+					},
+					[],
+					streamSubscription(state.currentConversation.agentUrl, userPrompt),
+				];
+			}
+			return state;
+		}
+
+		case "SandboxCreated": {
+			if (!state.currentConversation) {
+				const conversationId = nanoid();
+				const userPrompt = state.messages[state.messages.length - 1]?.content || "";
+
+				const newConversation: Conversation = {
+					id: conversationId,
+					first_prompt: userPrompt,
+					agentUrl: action.agentUrl,
+					sandboxId: action.sandboxId,
+				};
+
+				const updatedConversations = [...state.conversations, newConversation];
+
+				return [
+					{
+						...state,
+						conversations: updatedConversations,
+						currentConversation: newConversation,
+					},
+					[
+						saveConversationsToStorage(updatedConversations),
+					],
+					streamSubscription(action.agentUrl, userPrompt),
+				];
+			} else {
+				const updatedConversation = {
+					...state.currentConversation,
+					agentUrl: action.agentUrl,
+					sandboxId: action.sandboxId,
+				};
+				const updatedConversations = state.conversations.map((c) =>
+					c.id === updatedConversation.id ? updatedConversation : c
+				);
+
+				const userPrompt = state.messages[state.messages.length - 1]?.content || "";
+
+				return [
+					{
+						...state,
+						conversations: updatedConversations,
+						currentConversation: updatedConversation,
+					},
+					[
+						saveConversationsToStorage(updatedConversations),
+					],
+					streamSubscription(action.agentUrl, userPrompt),
+				];
+			}
+		}
+
+		case "AssistantMessageStarted":
+			return {
+				...state,
+				messages: [...state.messages, { role: "assistant", content: "" }],
+				currentAssistantMessage: "",
+			};
+
+		case "StreamingDelta": {
+			const newAssistantMessage = state.currentAssistantMessage + action.content;
+			const updatedMessages = [...state.messages];
+			if (updatedMessages.length > 0 && updatedMessages[updatedMessages.length - 1].role === "assistant") {
+				updatedMessages[updatedMessages.length - 1] = {
+					role: "assistant",
+					content: newAssistantMessage,
+				};
+			} else {
+				updatedMessages.push({ role: "assistant", content: newAssistantMessage });
+			}
+
+			return {
+				...state,
+				messages: updatedMessages,
+				currentAssistantMessage: newAssistantMessage,
+			};
+		}
+
+		case "StreamingCompleted":
+			return {
+				...state,
+				isStreaming: false,
+				currentAssistantMessage: "",
+			};
+
+		case "StreamingError": {
+			const errorMessage: Message = {
+				role: "assistant",
+				content: `Error: ${action.error}`,
+			};
+			return {
+				...state,
+				messages: [...state.messages, errorMessage],
+				isStreaming: false,
+				currentAssistantMessage: "",
+			};
+		}
+
+		case "SelectConversation":
+			return {
+				...state,
+				currentConversation: action.conversation,
+				messages: [{ role: "user", content: action.conversation.first_prompt }],
+			};
+
+		case "KillSandbox": {
+			if (!state.currentConversation?.sandboxId) return state;
+			return [
+				state,
+				killSandboxCommand(state.currentConversation.sandboxId),
+			];
+		}
+
+		case "SandboxKilled":
+			alert(`Sandbox ${state.currentConversation?.sandboxId} killed successfully`);
+			return {
+				...state,
+				currentConversation: null,
+				messages: [],
+			};
+
+		case "SandboxKillError":
+			alert(`Error killing sandbox: ${action.error}`);
+			return state;
+
+		case "OpenLogsDialog":
+			if (!state.currentConversation?.sandboxId) return state;
+			return [
+				{
+					...state,
+					logsDialogOpen: true,
+					logsLoading: true,
+					logsError: null,
+				},
+				fetchLogsCommand(state.currentConversation.sandboxId),
+			];
+
+		case "CloseLogsDialog":
+			return {
+				...state,
+				logsDialogOpen: false,
+			};
+
+		case "FetchLogs":
+			if (!state.currentConversation?.sandboxId) return state;
+			return [
+				{
+					...state,
+					logsLoading: true,
+					logsError: null,
+				},
+				fetchLogsCommand(state.currentConversation.sandboxId),
+			];
+
+		case "LogsLoaded":
+			return {
+				...state,
+				logs: action.logs,
+				logsLoading: false,
+			};
+
+		case "LogsError":
+			return {
+				...state,
+				logsError: action.error,
+				logsLoading: false,
+			};
+
+		default:
+			return state;
+	}
+}
+
+export default function Home() {
+	const [state, dispatch] = useReducerWithCommands(
+		reducer,
+		initialState,
+		loadConversationsFromStorage()
+	);
+
+	const handleSubmit = (promptMessage: { text: string }) => {
+		dispatch({ type: "SubmitPrompt", text: promptMessage.text });
 	};
 
-	const fetchLogs = async () => {
-		if (!currentConversation?.sandboxId) return;
+	const handleKillSandbox = () => {
+		dispatch({ type: "KillSandbox" });
+	};
 
-		setLogsLoading(true);
-		setLogsError(null);
+	const handleOpenLogs = () => {
+		dispatch({ type: "OpenLogsDialog" });
+	};
 
-		try {
-			const response = await fetch(`/api/sandbox/logs?sandboxId=${currentConversation.sandboxId}`);
-
-			if (!response.ok) {
-				const errorData = await response.json();
-				throw new Error(errorData.error || "Failed to fetch logs");
-			}
-
-			const data = await response.json();
-
-			// Parse NDJSON logs
-			if (data.logs) {
-				const logLines = data.logs
-					.trim()
-					.split("\n")
-					.filter((line: string) => line.length > 0);
-
-				const parsedLogs: LogEntry[] = [];
-
-				for (const line of logLines) {
-					try {
-						const logEntry = JSON.parse(line);
-						parsedLogs.push(logEntry);
-					} catch (e) {
-						console.error("Failed to parse log line:", line);
-					}
-				}
-
-				setLogs(parsedLogs);
-			} else {
-				setLogs([]);
-			}
-		} catch (err) {
-			setLogsError(err instanceof Error ? err.message : "Unknown error");
-		} finally {
-			setLogsLoading(false);
-		}
+	const handleRefreshLogs = () => {
+		dispatch({ type: "FetchLogs" });
 	};
 
 	const formatTimestamp = (timestamp: string) => {
@@ -301,14 +503,11 @@ export default function Home() {
 	};
 
 	const formatMetadata = (log: LogEntry) => {
-		const { timestamp, level, message, ...metadata } = log;
+		const metadata = Object.fromEntries(
+			Object.entries(log).filter(([key]) => !['timestamp', 'level', 'message'].includes(key))
+		);
 		if (Object.keys(metadata).length === 0) return "";
 		return JSON.stringify(metadata, null, 2);
-	};
-
-	const handleOpenLogs = () => {
-		setLogsDialogOpen(true);
-		fetchLogs();
 	};
 
 	return (
@@ -318,13 +517,12 @@ export default function Home() {
 					<div className="h-full p-4">
 						<h2 className="font-semibold text-lg">Conversations</h2>
 						<div className="mt-4 space-y-2">
-							{conversations.map((conv) => (
+							{state.conversations.map((conv) => (
 								<div
 									key={conv.id}
 									className="cursor-pointer rounded border p-2 text-sm hover:bg-accent"
 									onClick={() => {
-										setCurrentConversation(conv);
-										setMessages([{ role: "user", content: conv.first_prompt }]);
+										dispatch({ type: "SelectConversation", conversation: conv });
 									}}
 								>
 									{conv.first_prompt.slice(0, 30)}...
@@ -338,24 +536,24 @@ export default function Home() {
 
 				<ResizablePanel defaultSize={60} minSize={30}>
 					<div className="flex h-full flex-col p-4">
-						{currentConversation?.sandboxId && (
+						{state.currentConversation?.sandboxId && (
 							<div className="sticky top-0 mb-4 flex items-center justify-between border-b bg-background pb-2">
 								<h2 className="font-semibold text-lg">
-									Sandbox: {currentConversation.sandboxId}
+									Sandbox: {state.currentConversation.sandboxId}
 								</h2>
 								<div className="flex gap-2">
 									<Button variant="outline" onClick={handleOpenLogs}>
 										Logs
 									</Button>
 									<Button variant="destructive" onClick={handleKillSandbox}>
-										Kill {currentConversation.sandboxId}
+										Kill {state.currentConversation.sandboxId}
 									</Button>
 								</div>
 							</div>
 						)}
 
 						<div className="flex-1 space-y-4 overflow-y-auto">
-							{messages.map((msg, idx) => (
+							{state.messages.map((msg, idx) => (
 								<div
 									key={idx}
 									className={`rounded p-3 ${
@@ -377,12 +575,12 @@ export default function Home() {
 								<PromptInputBody>
 									<PromptInputTextarea
 										placeholder="Type your research question..."
-										disabled={isStreaming}
+										disabled={state.isStreaming}
 									/>
 								</PromptInputBody>
 								<PromptInputFooter>
 									<div />
-									<PromptInputSubmit disabled={isStreaming} />
+									<PromptInputSubmit disabled={state.isStreaming} />
 								</PromptInputFooter>
 							</PromptInput>
 						</div>
@@ -395,16 +593,16 @@ export default function Home() {
 					<div className="h-full p-4">
 						<h2 className="font-semibold text-lg">Info</h2>
 						<div className="mt-4 text-sm">
-							{currentConversation ? (
+							{state.currentConversation ? (
 								<>
 									<p>
-										<strong>Conversation ID:</strong> {currentConversation.id}
+										<strong>Conversation ID:</strong> {state.currentConversation.id}
 									</p>
 									<p>
-										<strong>Sandbox ID:</strong> {currentConversation.sandboxId}
+										<strong>Sandbox ID:</strong> {state.currentConversation.sandboxId}
 									</p>
 									<p>
-										<strong>Agent URL:</strong> {currentConversation.agentUrl}
+										<strong>Agent URL:</strong> {state.currentConversation.agentUrl}
 									</p>
 								</>
 							) : (
@@ -416,37 +614,37 @@ export default function Home() {
 			</ResizablePanelGroup>
 
 			{/* Logs Dialog */}
-			<Dialog open={logsDialogOpen} onOpenChange={setLogsDialogOpen}>
+			<Dialog open={state.logsDialogOpen} onOpenChange={(open) => dispatch({ type: open ? "OpenLogsDialog" : "CloseLogsDialog" })}>
 				<DialogContent className="max-w-5xl max-h-[80vh] overflow-y-auto">
 					<DialogHeader>
 						<DialogTitle>Sandbox Logs</DialogTitle>
 						<DialogDescription>
-							Sandbox ID: {currentConversation?.sandboxId}
+							Sandbox ID: {state.currentConversation?.sandboxId}
 						</DialogDescription>
 					</DialogHeader>
 
 					<div className="mt-4">
-						<Button onClick={fetchLogs} disabled={logsLoading} className="mb-4">
-							{logsLoading ? "Refreshing..." : "Refresh Logs"}
+						<Button onClick={handleRefreshLogs} disabled={state.logsLoading} className="mb-4">
+							{state.logsLoading ? "Refreshing..." : "Refresh Logs"}
 						</Button>
 
-						{logsError && (
+						{state.logsError && (
 							<div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-								Error: {logsError}
+								Error: {state.logsError}
 							</div>
 						)}
 
-						{logs.length === 0 && !logsLoading && !logsError && (
+						{state.logs.length === 0 && !state.logsLoading && !state.logsError && (
 							<div className="bg-gray-100 border border-gray-300 text-gray-700 px-4 py-3 rounded mb-4">
 								No logs available yet. The server may still be starting up.
 							</div>
 						)}
 
-						{logs.length > 0 && (
+						{state.logs.length > 0 && (
 							<div className="border rounded-lg overflow-hidden">
 								<Table>
 									<TableCaption>
-										Showing {logs.length} log {logs.length === 1 ? "entry" : "entries"}
+										Showing {state.logs.length} log {state.logs.length === 1 ? "entry" : "entries"}
 									</TableCaption>
 									<TableHeader>
 										<TableRow>
@@ -457,7 +655,7 @@ export default function Home() {
 										</TableRow>
 									</TableHeader>
 									<TableBody>
-										{logs.map((log, index) => (
+										{state.logs.map((log, index) => (
 											<TableRow key={index}>
 												<TableCell className="font-mono text-sm">
 													{formatTimestamp(log.timestamp)}
