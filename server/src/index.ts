@@ -1,16 +1,31 @@
 // Load environment variables from .env file (for local development only)
 // In E2B sandbox, GROQ_API_KEY is passed via command line
-import 'dotenv/config';
+// Only load dotenv if we're in local dev (not in E2B sandbox)
+if (process.env.NODE_ENV !== 'production') {
+  try {
+    await import('dotenv/config');
+  } catch {
+    // dotenv not available or failed to load - that's ok in sandbox
+  }
+}
 
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { streamSSE } from 'hono/streaming';
+import { cors } from 'hono/cors';
 import OpenAI from 'openai';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { log } from './logger';
 
 const app = new Hono();
+
+// Enable CORS for all routes
+app.use('*', cors({
+  origin: '*', // Allow all origins for E2B sandbox access
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type'],
+}));
 
 // Server state
 let agentStream: AsyncIterable<unknown> | null = null;

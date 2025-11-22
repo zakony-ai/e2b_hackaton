@@ -13,7 +13,7 @@ await esbuild.build({
   target: 'node20',
   format: 'esm',
   outfile: join(__dirname, 'dist/server.mjs'),
-  external: [], // Bundle everything, no external dependencies needed
+  external: ['dotenv'], // Only exclude dotenv - it's for local dev only
   minify: true,
   sourcemap: false,
   logLevel: 'info',
