@@ -60,7 +60,11 @@ Example:
 After reading papers, always provide a text response that:
 - Summarizes findings from the papers
 - Cites paper titles, authors, and IDs
-- Provides links (https://arxiv.org/abs/PAPER_ID)`;
+- CRITICAL: When citing papers, you MUST use the format [paper_id](link) where:
+  * paper_id is the exact paper ID (e.g., "2511.06901v1")
+  * link is the full URL to the paper (e.g., "https://arxiv.org/abs/2511.06901v1")
+  * Example: [2511.06901v1](https://arxiv.org/abs/2511.06901v1)
+  * This is MANDATORY - always cite papers in this exact format`;
 
 // Using shared Message type for consistency across client/server
 // Note: For API compatibility, we still need to convert these to OpenAI format
@@ -437,12 +441,6 @@ app.post("/agent/talk", async (c) => {
 									type: "TOOL_RESULT_RECEIVED",
 									toolCallId: item.id,
 									output: item.output,
-								});
-
-								// Send tool call completed event to mark tool as done in UI
-								await sendAction(sseStream, {
-									type: "TOOL_CALL_COMPLETED",
-									toolCallId: item.id,
 								});
 
 								log({

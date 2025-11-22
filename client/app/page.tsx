@@ -35,7 +35,12 @@ import {
 	type StateWithSideEffects,
 } from "@/lib/react";
 import type { Message, StreamAction, LogEntry } from "@shared/index";
-import { Markdown } from "@/components/ui/markdown";
+import {
+	Markdown,
+	getReadingList,
+	removeFromReadingList,
+	type ReadingListItem,
+} from "@/components/ui/markdown";
 import {
 	Tool,
 	ToolHeader,
@@ -43,6 +48,7 @@ import {
 	ToolInput,
 	ToolOutput,
 } from "@/components/ai-elements/tool";
+import { useEffect, useState } from "react";
 
 interface Conversation {
 	id: string;
@@ -92,6 +98,8 @@ const initialState: State = {
 	logsLoading: false,
 	logsError: null,
 };
+
+const IS_DEV = false;
 
 // Commands
 const loadConversationsFromStorage = (): Command<Action> => async () => {
@@ -182,7 +190,7 @@ const streamSubscription =
 				}
 
 				const decoder = new TextDecoder();
-				let buffer = '';
+				let buffer = "";
 
 				while (true) {
 					const { done, value } = await reader.read();
@@ -193,7 +201,7 @@ const streamSubscription =
 
 					const lines = buffer.split("\n");
 					// Keep the last potentially incomplete line in the buffer
-					buffer = lines.pop() || '';
+					buffer = lines.pop() || "";
 
 					for (const line of lines) {
 						if (line.startsWith("data: ")) {
@@ -636,6 +644,22 @@ export default function Home() {
 		loadConversationsFromStorage(),
 	);
 
+	const [readingList, setReadingList] = useState<ReadingListItem[]>([]);
+
+	// Load reading list on mount and listen for updates
+	useEffect(() => {
+		setReadingList(getReadingList());
+
+		const handleReadingListUpdate = () => {
+			setReadingList(getReadingList());
+		};
+
+		window.addEventListener("readingListUpdated", handleReadingListUpdate);
+		return () => {
+			window.removeEventListener("readingListUpdated", handleReadingListUpdate);
+		};
+	}, []);
+
 	const handleSubmit = (promptMessage: { text: string }) => {
 		dispatch({ type: "SubmitPrompt", text: promptMessage.text });
 	};
@@ -682,9 +706,8 @@ export default function Home() {
 	return (
 		<div className="h-screen w-full">
 			<ResizablePanelGroup direction="horizontal">
-				<ResizablePanel defaultSize={10} minSize={5}>
+				<ResizablePanel defaultSize={15} minSize={10}>
 					<div className="h-full p-4 flex flex-col">
-						<h2 className="font-semibold text-lg">Researches</h2>
 						<Button
 							variant="secondary"
 							className="w-full mt-4"
@@ -720,7 +743,7 @@ export default function Home() {
 
 				<ResizablePanel defaultSize={60} minSize={30}>
 					<div className="flex h-full flex-col relative overflow-hidden">
-						{state.currentConversation?.sandboxId && (
+						{IS_DEV && state.currentConversation?.sandboxId && (
 							<div className="sticky top-0 mb-4 flex items-center justify-between border-b bg-background pb-2">
 								<h2 className="font-semibold text-lg">
 									Sandbox: {state.currentConversation.sandboxId}
@@ -749,13 +772,11 @@ export default function Home() {
 										// Render user messages
 										if (msg.role === "user") {
 											return (
-												<div
-													key={messageKey}
-													className="rounded p-3 bg-blue-100 dark:bg-blue-900"
-												>
-													<div className="font-semibold text-sm">You</div>
-													<div className="mt-1 whitespace-pre-wrap">
-														{msg.content}
+												<div key={messageKey} className="flex justify-end">
+													<div className="rounded-2xl p-3 bg-gray-100 dark:bg-gray-100 max-w-[500px]">
+														<div className="whitespace-pre-wrap">
+															{msg.content}
+														</div>
 													</div>
 												</div>
 											);
@@ -766,7 +787,6 @@ export default function Home() {
 											return (
 												<div key={messageKey} className="rounded p-3">
 													<div className="font-semibold text-sm">
-														Assistant
 														{state.isAgentTalking &&
 															idx === state.messages.length - 1 &&
 															" (streaming...)"}
@@ -862,26 +882,47 @@ export default function Home() {
 				<ResizableHandle />
 
 				<ResizablePanel defaultSize={30} minSize={15}>
-					<div className="h-full p-4">
-						<h2 className="font-semibold text-lg">Info</h2>
-						<div className="mt-4 text-sm">
-							{state.currentConversation ? (
-								<>
-									<p>
-										<strong>Conversation ID:</strong>{" "}
-										{state.currentConversation.id}
-									</p>
-									<p>
-										<strong>Sandbox ID:</strong>{" "}
-										{state.currentConversation.sandboxId}
-									</p>
-									<p>
-										<strong>Agent URL:</strong>{" "}
-										{state.currentConversation.agentUrl}
-									</p>
-								</>
+					<div className="h-full p-4 flex flex-col">
+						<h2 className="font-semibold text-lg mb-4">Reading List</h2>
+						<div className="flex-1 overflow-y-auto space-y-2">
+							{readingList.length === 0 ? (
+								<p className="text-sm text-gray-500 dark:text-gray-400">
+									No papers saved yet. Hover over paper citations in assistant
+									responses to save them.
+								</p>
 							) : (
-								<p>No active conversation</p>
+								readingList.map((item, index) => (
+									<div
+										key={index}
+										className="group relative flex items-start justify-between p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors"
+									>
+										<div className="flex-1 min-w-0">
+											<a
+												href={item.link}
+												target="_blank"
+												rel="noopener noreferrer"
+												className="block"
+											>
+												<p className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline">
+													{item.name}
+												</p>
+												<p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-1">
+													{item.link}
+												</p>
+											</a>
+										</div>
+										<Button
+											size="sm"
+											variant="ghost"
+											className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity"
+											onClick={() => {
+												removeFromReadingList(item.link);
+											}}
+										>
+											×
+										</Button>
+									</div>
+								))
 							)}
 						</div>
 					</div>

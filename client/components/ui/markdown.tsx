@@ -2,11 +2,54 @@ import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
+import { Button } from "@/components/ui/button";
 
 interface MarkdownProps {
 	children: string;
 	className?: string;
 }
+
+export interface ReadingListItem {
+	name: string;
+	link: string;
+}
+
+// Helper functions for reading list localStorage
+export const getReadingList = (): ReadingListItem[] => {
+	if (typeof window === 'undefined') return [];
+	const stored = localStorage.getItem('readingList');
+	if (stored) {
+		try {
+			return JSON.parse(stored);
+		} catch {
+			return [];
+		}
+	}
+	return [];
+};
+
+export const saveToReadingList = (item: ReadingListItem) => {
+	if (typeof window === 'undefined') return;
+	const list = getReadingList();
+	// Check if already exists
+	const exists = list.some(i => i.link === item.link);
+	if (!exists) {
+		list.push(item);
+		localStorage.setItem('readingList', JSON.stringify(list));
+		// Dispatch custom event to notify other components
+		window.dispatchEvent(new CustomEvent('readingListUpdated'));
+	}
+};
+
+export const removeFromReadingList = (link: string) => {
+	if (typeof window === 'undefined') return;
+	const list = getReadingList();
+	const filtered = list.filter(i => i.link !== link);
+	localStorage.setItem('readingList', JSON.stringify(filtered));
+	// Dispatch custom event to notify other components
+	window.dispatchEvent(new CustomEvent('readingListUpdated'));
+};
 
 export function Markdown({ children, className = "" }: MarkdownProps) {
 	const components: Components = {
@@ -73,17 +116,63 @@ export function Markdown({ children, className = "" }: MarkdownProps) {
 		},
 		pre: ({ children }) => <pre className="mb-4">{children}</pre>,
 
-		// Links
-		a: ({ href, children }) => (
-			<a
-				href={href}
-				className="text-blue-600 dark:text-blue-400 underline hover:text-blue-800 dark:hover:text-blue-300"
-				target="_blank"
-				rel="noopener noreferrer"
-			>
-				{children}
-			</a>
-		),
+		// Links - custom renderer for paper citations
+		a: ({ href, children }) => {
+			// Check if this looks like a paper citation (paper_id as text, link as href)
+			const childText = typeof children === 'string' ? children :
+				(Array.isArray(children) && children.length === 1 && typeof children[0] === 'string') ? children[0] : null;
+
+			// Pattern to detect paper IDs (e.g., "2511.06901v1", "1234.5678", etc.)
+			const isPaperCitation = childText && href &&
+				/^\d{4}\.\d{4,5}(v\d+)?$/.test(childText.trim());
+
+			if (isPaperCitation && href) {
+				const paperId = childText!.trim();
+
+				return (
+					<HoverCard>
+						<HoverCardTrigger asChild>
+							<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 cursor-pointer hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors">
+								{paperId}
+							</span>
+						</HoverCardTrigger>
+						<HoverCardContent className="w-auto p-2">
+							<div className="flex gap-2">
+								<Button
+									size="sm"
+									variant="outline"
+									onClick={() => {
+										saveToReadingList({ name: paperId, link: href });
+									}}
+								>
+									Save
+								</Button>
+								<Button
+									size="sm"
+									onClick={() => {
+										window.open(href, '_blank', 'noopener,noreferrer');
+									}}
+								>
+									Open
+								</Button>
+							</div>
+						</HoverCardContent>
+					</HoverCard>
+				);
+			}
+
+			// Regular link
+			return (
+				<a
+					href={href}
+					className="text-blue-600 dark:text-blue-400 underline hover:text-blue-800 dark:hover:text-blue-300"
+					target="_blank"
+					rel="noopener noreferrer"
+				>
+					{children}
+				</a>
+			);
+		},
 
 		// Horizontal rule
 		hr: () => <hr className="my-6 border-gray-300 dark:border-gray-700" />,
@@ -97,7 +186,7 @@ export function Markdown({ children, className = "" }: MarkdownProps) {
 			</div>
 		),
 		thead: ({ children }) => (
-			<thead className="bg-gray-100 dark:bg-gray-800">{children}</thead>
+			<thead>{children}</thead>
 		),
 		tbody: ({ children }) => <tbody>{children}</tbody>,
 		tr: ({ children }) => (
