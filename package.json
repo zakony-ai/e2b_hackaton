@@ -13,10 +13,22 @@
     "dev:without-sandbox": "concurrently --names \"server,client\" --prefix-colors \"cyan,magenta\" \"pnpm server:dev\" \"pnpm client:dev\"",
     "typecheck": "pnpm -r --no-bail --if-present typecheck",
     "lint": "pnpm -r --no-bail --if-present lint",
-    "lint:fix": "pnpm -r --if-present lint:fix"
+    "lint:fix": "pnpm -r --if-present lint:fix",
+    "format": "pnpm biome format --write .",
+    "format:md": "prettier --write \"**/*.md\"",
+    "format:all": "pnpm format && pnpm format:md",
+    "biome:lint": "pnpm biome lint .",
+    "biome:lint:fix": "pnpm biome lint --write .",
+    "check": "pnpm biome check .",
+    "check:fix": "pnpm biome check --write .",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "@biomejs/biome": "^1.9.4",
+    "concurrently": "^9.1.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.6.2"
   },
   "keywords": [],
   "author": "",

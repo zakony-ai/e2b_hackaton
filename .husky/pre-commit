@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+
+# Load nvm to make pnpm available (needed for GUI apps like Zed)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+pnpm lint-staged
+pnpm run lint
+pnpm run typecheck
