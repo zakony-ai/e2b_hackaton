@@ -229,7 +229,6 @@ app.post("/agent/talk", async (c) => {
 
 	if (isAgentTalking()) {
 		log({ level: "warn", message: "Agent is already talking" });
-		c.header("Access-Control-Allow-Origin", "*");
 		return c.json(
 			{
 				error:
@@ -243,7 +242,6 @@ app.post("/agent/talk", async (c) => {
 
 	if (!user_prompt) {
 		log({ level: "error", message: "Missing user_prompt" });
-		c.header("Access-Control-Allow-Origin", "*");
 		return c.json({ error: "user_prompt is required" }, { status: 400 });
 	}
 
@@ -318,11 +316,7 @@ app.post("/agent/talk", async (c) => {
 		});
 	};
 
-	// Stream SSE to client with explicit CORS headers
-	c.header("Access-Control-Allow-Origin", "*");
-	c.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-	c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
+	// Stream SSE to client
 	return streamSSE(c, async (sseStream) => {
 		let hasStartedText = false;
 		let currentAssistantText = "";

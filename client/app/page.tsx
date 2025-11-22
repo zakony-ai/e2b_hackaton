@@ -59,6 +59,7 @@ type Action =
 	| { type: "SandboxCreated"; agentUrl: string; sandboxId: string }
 	| { type: "StreamingError"; error: string }
 	| { type: "SelectConversation"; conversation: Conversation }
+	| { type: "NewResearch" }
 	| { type: "KillSandbox" }
 	| { type: "SandboxKilled" }
 	| { type: "SandboxKillError"; error: string }
@@ -105,7 +106,10 @@ const saveMessagesToStorage = (conversationId: string, messages: Message[]): Com
 	const key = `messages_${conversationId}`;
 	localStorage.setItem(key, JSON.stringify(messages));
 	// No action needed, this is a side effect only
-	return { type: "ConversationsLoaded", conversations: [] };
+	// Return a no-op action by reloading current conversations
+	const stored = localStorage.getItem("conversations");
+	const conversations = stored ? JSON.parse(stored) : [];
+	return { type: "ConversationsLoaded", conversations };
 };
 
 const loadMessagesFromStorage = (conversationId: string): Message[] => {
@@ -483,6 +487,14 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 			};
 		}
 
+		case "NewResearch": {
+			return {
+				...state,
+				currentConversation: null,
+				messages: [],
+			};
+		}
+
 		case "KillSandbox": {
 			if (!state.currentConversation?.sandboxId) return state;
 			return [
@@ -604,18 +616,30 @@ export default function Home() {
 			<ResizablePanelGroup direction="horizontal">
 				<ResizablePanel defaultSize={10} minSize={5}>
 					<div className="h-full p-4 flex flex-col">
-						<h2 className="font-semibold text-lg">Conversations</h2>
+						<h2 className="font-semibold text-lg">Researches</h2>
+						<Button
+							variant="secondary"
+							className="w-full mt-4"
+							onClick={() => {
+								dispatch({ type: "NewResearch" });
+							}}
+						>
+							+ New research
+						</Button>
 						<div className="mt-4 space-y-2 overflow-y-auto flex-1">
 							{state.conversations.map((conv) => (
-								<div
+								<Button
 									key={conv.id}
-									className="cursor-pointer rounded border p-2 text-sm hover:bg-accent"
+									variant="ghost"
+									className={`w-full justify-start text-left overflow-hidden ${
+										state.currentConversation?.id === conv.id ? "bg-accent" : ""
+									}`}
 									onClick={() => {
 										dispatch({ type: "SelectConversation", conversation: conv });
 									}}
 								>
-									{conv.first_prompt.slice(0, 30)}...
-								</div>
+									<span className="truncate">{conv.first_prompt}</span>
+								</Button>
 							))}
 						</div>
 					</div>

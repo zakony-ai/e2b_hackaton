@@ -30,3 +30,4 @@ To win, we need to use: 1) E2B sandbox, 2) At least one MCP from the [Docker Hub
 - [Example: MCP client connection](https://github.com/e2b-dev/e2b-cookbook/tree/main/examples/mcp-client-js)
 - [Example: Custom MCP server](https://github.com/e2b-dev/e2b-cookbook/tree/main/examples/mcp-custom-server-js)
 - [Custom E2B template with pre-installed MCP servers](https://github.com/e2b-dev/e2b-cookbook/tree/main/examples/mcp-custom-template-js)
+- dont touch anything about cors, we keep messing it up, jsut keep it as it is
