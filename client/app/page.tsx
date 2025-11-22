@@ -48,7 +48,6 @@ import {
 	ToolInput,
 	ToolOutput,
 } from "@/components/ai-elements/tool";
-import { useEffect, useState } from "react";
 
 interface Conversation {
 	id: string;
@@ -67,6 +66,7 @@ interface State {
 	logs: LogEntry[];
 	logsLoading: boolean;
 	logsError: string | null;
+	readingList: ReadingListItem[];
 }
 
 // Actions - combine StreamAction with app-specific actions
@@ -85,7 +85,8 @@ type Action =
 	| { type: "CloseLogsDialog" }
 	| { type: "FetchLogs" }
 	| { type: "LogsLoaded"; logs: LogEntry[] }
-	| { type: "LogsError"; error: string };
+	| { type: "LogsError"; error: string }
+	| { type: "UpdateReadingList"; readingList: ReadingListItem[] };
 
 // Initial state
 const initialState: State = {
@@ -97,6 +98,7 @@ const initialState: State = {
 	logs: [],
 	logsLoading: false,
 	logsError: null,
+	readingList: typeof window !== 'undefined' ? getReadingList() : [],
 };
 
 const IS_DEV = false;
@@ -244,6 +246,17 @@ const streamSubscription =
 		})();
 	};
 
+const readingListSubscription = () => (dispatch: (action: Action) => void) => {
+	const handleReadingListUpdate = () => {
+		dispatch({ type: "UpdateReadingList", readingList: getReadingList() });
+	};
+
+	window.addEventListener("readingListUpdated", handleReadingListUpdate);
+
+	// Return cleanup function (note: subscriptions don't have cleanup in this pattern,
+	// but the event listener will be there for the lifetime of the component)
+};
+
 const killSandboxCommand =
 	(sandboxId: string): Command<Action> =>
 	async () => {
@@ -316,6 +329,13 @@ function reducer(
 ): StateWithSideEffects<State, Action> {
 	switch (action.type) {
 		case "ConversationsLoaded":
+			// Set up reading list subscription on initial load
+			if (state.conversations.length === 0) {
+				return [
+					{ ...state, conversations: action.conversations },
+					readingListSubscription(),
+				];
+			}
 			return { ...state, conversations: action.conversations };
 
 		case "SubmitPrompt": {
@@ -632,6 +652,12 @@ function reducer(
 				logsLoading: false,
 			};
 
+		case "UpdateReadingList":
+			return {
+				...state,
+				readingList: action.readingList,
+			};
+
 		default:
 			return state;
 	}
@@ -643,22 +669,6 @@ export default function Home() {
 		initialState,
 		loadConversationsFromStorage(),
 	);
-
-	const [readingList, setReadingList] = useState<ReadingListItem[]>([]);
-
-	// Load reading list on mount and listen for updates
-	useEffect(() => {
-		setReadingList(getReadingList());
-
-		const handleReadingListUpdate = () => {
-			setReadingList(getReadingList());
-		};
-
-		window.addEventListener("readingListUpdated", handleReadingListUpdate);
-		return () => {
-			window.removeEventListener("readingListUpdated", handleReadingListUpdate);
-		};
-	}, []);
 
 	const handleSubmit = (promptMessage: { text: string }) => {
 		dispatch({ type: "SubmitPrompt", text: promptMessage.text });
@@ -885,13 +895,13 @@ export default function Home() {
 					<div className="h-full p-4 flex flex-col">
 						<h2 className="font-semibold text-lg mb-4">Reading List</h2>
 						<div className="flex-1 overflow-y-auto space-y-2">
-							{readingList.length === 0 ? (
+							{state.readingList.length === 0 ? (
 								<p className="text-sm text-gray-500 dark:text-gray-400">
 									No papers saved yet. Hover over paper citations in assistant
 									responses to save them.
 								</p>
 							) : (
-								readingList.map((item, index) => (
+								state.readingList.map((item, index) => (
 									<div
 										key={index}
 										className="group relative flex items-start justify-between p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors"
