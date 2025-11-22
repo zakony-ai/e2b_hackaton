@@ -65,8 +65,8 @@ app.use(
 	"*",
 	cors({
 		origin: "*", // Allow all origins for E2B sandbox access
-		allowMethods: ["GET", "POST", "OPTIONS"],
-		allowHeaders: ["Content-Type", "Authorization"],
+		allowMethods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+		allowHeaders: ["Content-Type", "Authorization", "Accept", "X-Requested-With"],
 		exposeHeaders: ["Content-Type"],
 		credentials: false,
 		maxAge: 86400, // Cache preflight for 24 hours
@@ -75,7 +75,14 @@ app.use(
 
 // Explicit OPTIONS handler for all routes
 app.options("*", (c) => {
-	return c.text("", 200);
+	c.header("Access-Control-Allow-Origin", "*");
+	c.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+	c.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, X-Requested-With");
+	c.header("Access-Control-Max-Age", "86400");
+	return new Response(null, {
+		status: 204,
+		headers: c.res.headers,
+	});
 });
 
 // Server state
@@ -153,42 +160,61 @@ function reconstructHistory(
 	};
 
 	// Convert our Message format to OpenAI Responses API format
-	// All items (messages, tool_calls, tool_results) go into a flat array
-	const inputItems = messages.flatMap((msg) => {
+	// For MCP calls, we need to combine tool_call and tool_result into a single mcp_call item
+	type InputItem = NonNullable<ResponseCreateParams["input"]>[number];
+	const inputItems: InputItem[] = [];
+
+	interface McpCallData {
+		call: Message & { role: "tool_call" };
+		result?: Message & { role: "tool_result" };
+	}
+	const mcpCallsMap = new Map<string, McpCallData>();
+
+	// First pass: collect tool calls and results
+	for (const msg of messages) {
+		if (msg.role === "tool_call") {
+			mcpCallsMap.set(msg.id, { call: msg as Message & { role: "tool_call" } });
+		} else if (msg.role === "tool_result") {
+			const existing = mcpCallsMap.get(msg.id);
+			if (existing) {
+				existing.result = msg as Message & { role: "tool_result" };
+			}
+		}
+	}
+
+	// Second pass: build input items
+	for (const msg of messages) {
 		if (msg.role === "user" || msg.role === "prompt") {
 			// User message
-			return {
+			inputItems.push({
 				type: "message" as const,
 				role: "user" as const,
 				content: [{ type: "input_text" as const, text: msg.content }],
-			};
+			});
 		} else if (msg.role === "assistant") {
-			// Assistant message - only include if it has content
+			// Assistant message - include as string content if it has content
+			// The Responses API accepts strings for assistant messages in the input
 			if (msg.content && msg.content.trim().length > 0) {
-				return {
-					type: "message" as const,
-					role: "assistant" as const,
-					content: [{ type: "output_text" as const, text: msg.content }],
-				};
+				inputItems.push(msg.content);
 			}
 		} else if (msg.role === "tool_call") {
-			// Tool call - separate item in the flat array
-			return {
-				type: "function_call" as const,
-				call_id: msg.id,
-				name: msg.name,
-				arguments: msg.arguments,
-			};
-		} else if (msg.role === "tool_result") {
-			// Tool result - separate item in the flat array
-			return {
-				type: "function_call_output" as const,
-				call_id: msg.id,
-				output: msg.content,
-			};
+			// MCP tool call - combine with result if available
+			const mcpData = mcpCallsMap.get(msg.id);
+			if (mcpData) {
+				inputItems.push({
+					type: "mcp_call" as const,
+					id: msg.id,
+					name: msg.name,
+					arguments: msg.arguments,
+					server_label: "e2b_mcp_gateway", // Match the server label we configured
+					status: mcpData.result ? ("completed" as const) : ("in_progress" as const),
+					output: mcpData.result?.content,
+				});
+			}
 		}
-		return [];
-	});
+		// Skip tool_result - already merged into mcp_call
+		// Skip error messages - they're for display only, not for LLM context
+	}
 
 	return [systemMessage, ...inputItems] as unknown as ResponseCreateParams["input"];
 }
@@ -203,6 +229,7 @@ app.post("/agent/talk", async (c) => {
 
 	if (isAgentTalking()) {
 		log({ level: "warn", message: "Agent is already talking" });
+		c.header("Access-Control-Allow-Origin", "*");
 		return c.json(
 			{
 				error:
@@ -216,6 +243,7 @@ app.post("/agent/talk", async (c) => {
 
 	if (!user_prompt) {
 		log({ level: "error", message: "Missing user_prompt" });
+		c.header("Access-Control-Allow-Origin", "*");
 		return c.json({ error: "user_prompt is required" }, { status: 400 });
 	}
 
@@ -290,7 +318,11 @@ app.post("/agent/talk", async (c) => {
 		});
 	};
 
-	// Stream SSE to client
+	// Stream SSE to client with explicit CORS headers
+	c.header("Access-Control-Allow-Origin", "*");
+	c.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+	c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
 	return streamSSE(c, async (sseStream) => {
 		let hasStartedText = false;
 		let currentAssistantText = "";
@@ -421,6 +453,12 @@ app.post("/agent/talk", async (c) => {
 							errorMessage,
 							errorType: error?.type,
 							errorCode: error?.code,
+						});
+
+						// Save error message to messages.ndjson
+						await appendMessageToFile({
+							role: "error",
+							content: errorMessage,
 						});
 
 						await sendAction(sseStream, {

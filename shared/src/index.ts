@@ -6,7 +6,8 @@ export type Message
   | { role: "user"; content: string }
   | { role: "assistant"; content: string }
   | { role: "tool_call"; id: string; name: string; arguments: string }
-  | { role: "tool_result"; id: string; content: string };
+  | { role: "tool_result"; id: string; content: string }
+  | { role: "error"; content: string };
 
 // Actions dispatched from stream events to update UI
 export type StreamAction =

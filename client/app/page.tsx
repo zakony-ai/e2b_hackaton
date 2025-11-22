@@ -101,6 +101,26 @@ const saveConversationsToStorage = (conversations: Conversation[]): Command<Acti
 	return { type: "ConversationsLoaded", conversations };
 };
 
+const saveMessagesToStorage = (conversationId: string, messages: Message[]): Command<Action> => async () => {
+	const key = `messages_${conversationId}`;
+	localStorage.setItem(key, JSON.stringify(messages));
+	// No action needed, this is a side effect only
+	return { type: "ConversationsLoaded", conversations: [] };
+};
+
+const loadMessagesFromStorage = (conversationId: string): Message[] => {
+	const key = `messages_${conversationId}`;
+	const stored = localStorage.getItem(key);
+	if (stored) {
+		try {
+			return JSON.parse(stored);
+		} catch {
+			return [];
+		}
+	}
+	return [];
+};
+
 const createSandboxCommand = (): Command<Action> => async () => {
 	try {
 		const createResponse = await fetch("/api/sandbox/create", {
@@ -251,10 +271,18 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 			const newMessages = [...state.messages, userMessage];
 
 			if (!state.currentConversation) {
+				// Create a temporary conversation object immediately
+				const conversationId = nanoid();
+				const tempConversation: Conversation = {
+					id: conversationId,
+					first_prompt: userPrompt,
+				};
+
 				return [
 					{
 						...state,
 						messages: newMessages,
+						currentConversation: tempConversation,
 					},
 					createSandboxCommand(),
 				];
@@ -264,7 +292,7 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 						...state,
 						messages: newMessages,
 					},
-					[],
+					[saveMessagesToStorage(state.currentConversation.id, newMessages)],
 					streamSubscription(state.currentConversation.agentUrl, userPrompt),
 				];
 			}
@@ -272,11 +300,12 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 		}
 
 		case "SandboxCreated": {
-			if (!state.currentConversation) {
-				const conversationId = nanoid();
-				const lastMessage = state.messages[state.messages.length - 1];
-				const userPrompt = (lastMessage?.role === "user" || lastMessage?.role === "assistant") ? lastMessage.content : "";
+			const lastMessage = state.messages[state.messages.length - 1];
+			const userPrompt = (lastMessage?.role === "user" || lastMessage?.role === "assistant") ? lastMessage.content : "";
 
+			if (!state.currentConversation) {
+				// Fallback: create conversation if somehow we don't have one
+				const conversationId = nanoid();
 				const newConversation: Conversation = {
 					id: conversationId,
 					first_prompt: userPrompt,
@@ -294,21 +323,23 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 					},
 					[
 						saveConversationsToStorage(updatedConversations),
+						saveMessagesToStorage(conversationId, state.messages),
 					],
 					streamSubscription(action.agentUrl, userPrompt),
 				];
 			} else {
+				// Update existing conversation with sandbox details
 				const updatedConversation = {
 					...state.currentConversation,
 					agentUrl: action.agentUrl,
 					sandboxId: action.sandboxId,
 				};
-				const updatedConversations = state.conversations.map((c) =>
-					c.id === updatedConversation.id ? updatedConversation : c
-				);
 
-				const lastMessage = state.messages[state.messages.length - 1];
-				const userPrompt = (lastMessage?.role === "user" || lastMessage?.role === "assistant") ? lastMessage.content : "";
+				// Check if conversation is already in the list
+				const existingIndex = state.conversations.findIndex((c) => c.id === updatedConversation.id);
+				const updatedConversations = existingIndex >= 0
+					? state.conversations.map((c) => c.id === updatedConversation.id ? updatedConversation : c)
+					: [...state.conversations, updatedConversation];
 
 				return [
 					{
@@ -318,6 +349,7 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 					},
 					[
 						saveConversationsToStorage(updatedConversations),
+						saveMessagesToStorage(updatedConversation.id, state.messages),
 					],
 					streamSubscription(action.agentUrl, userPrompt),
 				];
@@ -327,16 +359,20 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 		// StreamAction handlers
 		case "ASSISTANT_TEXT_STARTED": {
 			// Add new assistant message to messages array
-			return {
-				...state,
-				messages: [...state.messages, { role: "assistant", content: "" }],
-				isAgentTalking: true,
-			};
+			const newMessages: Message[] = [...state.messages, { role: "assistant", content: "" }];
+			return [
+				{
+					...state,
+					messages: newMessages,
+					isAgentTalking: true,
+				},
+				state.currentConversation ? [saveMessagesToStorage(state.currentConversation.id, newMessages)] : [],
+			];
 		}
 
 		case "ASSISTANT_TEXT_DELTA": {
 			// Append delta to the last assistant message
-			const messages = [...state.messages];
+			const messages: Message[] = [...state.messages];
 			const lastIdx = messages.length - 1;
 
 			if (lastIdx >= 0 && messages[lastIdx].role === "assistant") {
@@ -346,7 +382,10 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 				};
 			}
 
-			return { ...state, messages };
+			return [
+				{ ...state, messages },
+				state.currentConversation ? [saveMessagesToStorage(state.currentConversation.id, messages)] : [],
+			];
 		}
 
 		case "ASSISTANT_TEXT_DONE": {
@@ -356,33 +395,41 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 
 		case "TOOL_CALL_ARGUMENTS_DONE": {
 			// Add tool_call message
-			return {
-				...state,
-				messages: [
-					...state.messages,
-					{
-						role: "tool_call",
-						id: action.toolCallId,
-						name: action.name,
-						arguments: action.arguments,
-					},
-				],
-			};
+			const newMessages: Message[] = [
+				...state.messages,
+				{
+					role: "tool_call" as const,
+					id: action.toolCallId,
+					name: action.name,
+					arguments: action.arguments,
+				},
+			];
+			return [
+				{
+					...state,
+					messages: newMessages,
+				},
+				state.currentConversation ? [saveMessagesToStorage(state.currentConversation.id, newMessages)] : [],
+			];
 		}
 
 		case "TOOL_RESULT_RECEIVED": {
 			// Add tool_result message
-			return {
-				...state,
-				messages: [
-					...state.messages,
-					{
-						role: "tool_result",
-						id: action.toolCallId,
-						content: action.output,
-					},
-				],
-			};
+			const newMessages: Message[] = [
+				...state.messages,
+				{
+					role: "tool_result" as const,
+					id: action.toolCallId,
+					content: action.output,
+				},
+			];
+			return [
+				{
+					...state,
+					messages: newMessages,
+				},
+				state.currentConversation ? [saveMessagesToStorage(state.currentConversation.id, newMessages)] : [],
+			];
 		}
 
 		case "LLM_TURN_FINISHED": {
@@ -393,24 +440,48 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 			};
 		}
 
-		case "StreamingError": {
-			// Add error message as assistant message
-			return {
-				...state,
-				messages: [
-					...state.messages,
-					{ role: "assistant", content: `Error: ${action.error}` },
-				],
-				isAgentTalking: false,
-			};
+		case "ERROR": {
+			// Add error message with error role
+			const newMessages: Message[] = [
+				...state.messages,
+				{ role: "error" as const, content: action.error },
+			];
+			return [
+				{
+					...state,
+					messages: newMessages,
+					isAgentTalking: false,
+				},
+				state.currentConversation ? [saveMessagesToStorage(state.currentConversation.id, newMessages)] : [],
+			];
 		}
 
-		case "SelectConversation":
+		case "StreamingError": {
+			// Add error message with error role
+			const newMessages: Message[] = [
+				...state.messages,
+				{ role: "error" as const, content: action.error },
+			];
+			return [
+				{
+					...state,
+					messages: newMessages,
+					isAgentTalking: false,
+				},
+				state.currentConversation ? [saveMessagesToStorage(state.currentConversation.id, newMessages)] : [],
+			];
+		}
+
+		case "SelectConversation": {
+			const loadedMessages = loadMessagesFromStorage(action.conversation.id);
 			return {
 				...state,
 				currentConversation: action.conversation,
-				messages: [{ role: "user", content: action.conversation.first_prompt }],
+				messages: loadedMessages.length > 0
+					? loadedMessages
+					: [{ role: "user", content: action.conversation.first_prompt }],
 			};
+		}
 
 		case "KillSandbox": {
 			if (!state.currentConversation?.sandboxId) return state;
@@ -532,9 +603,9 @@ export default function Home() {
 		<div className="h-screen w-full">
 			<ResizablePanelGroup direction="horizontal">
 				<ResizablePanel defaultSize={10} minSize={5}>
-					<div className="h-full p-4">
+					<div className="h-full p-4 flex flex-col">
 						<h2 className="font-semibold text-lg">Conversations</h2>
-						<div className="mt-4 space-y-2">
+						<div className="mt-4 space-y-2 overflow-y-auto flex-1">
 							{state.conversations.map((conv) => (
 								<div
 									key={conv.id}
@@ -636,6 +707,20 @@ export default function Home() {
 								// Don't render tool_result messages separately (they're shown within tool_call)
 								if (msg.role === "tool_result") {
 									return null;
+								}
+
+								// Render error messages
+								if (msg.role === "error") {
+									return (
+										<div key={messageKey} className="rounded p-3 bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-600">
+											<div className="font-semibold text-sm text-red-800 dark:text-red-200">
+												⚠️ Error
+											</div>
+											<div className="mt-1 whitespace-pre-wrap text-red-900 dark:text-red-100">
+												{msg.content}
+											</div>
+										</div>
+									);
 								}
 
 								return null;
