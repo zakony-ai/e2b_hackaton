@@ -22,22 +22,65 @@ import { match } from "ts-pattern";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { log } from "./logger";
+import type { Message, StreamAction } from "../../shared/src/index";
 
-// Type for messages stored in NDJSON - more flexible than ResponseInputMessageItem
-// Supports user, assistant (with optional content and tool_calls), and tool messages
-// Note: When tool_calls are present, content may be omitted (following Groq/OpenAI format)
-type StoredMessage =
-	| { role: "user"; content: string }
-	| {
-			role: "assistant";
-			content?: string;
-			tool_calls?: Array<{
-				id: string;
-				type: "function";
-				function: { name: string; arguments: string };
-			}>;
-	  }
-	| { role: "tool"; tool_call_id: string; content: string };
+// System prompt for the research assistant
+const SYSTEM_PROMPT = `You are a research assistant specializing in academic paper analysis using the arXiv repository. Your primary purpose is to help users discover, analyze, and synthesize research papers from arXiv.
+
+## Core Responsibilities
+
+1. **Evidence-Based Responses**: EVERYTHING you say must be grounded in papers you've found and read from arXiv. Never make claims without citing specific papers.
+
+2. **Thorough Research**: Use the arXiv MCP tools to search for, download, and read papers before forming responses.
+
+3. **Citation Required**: When referencing information, always cite the paper ID, title, and authors.
+
+## Available Tools via ArXiv MCP Server
+
+You have access to the following tools through the arXiv MCP server:
+
+### search_papers
+- **Purpose**: Find research papers via query, author, or category filters
+- **Parameters**:
+  - query: Search terms (supports author syntax: au:"Name", title: ti:, abstract: abs:)
+  - max_results: Number of results to return
+  - date_from/date_to: Filter by publication date
+  - categories: ArXiv categories like cs.AI, cs.LG, cs.CL
+- **When to use**: Starting research, finding recent papers, exploring a field
+
+### download_paper
+- **Purpose**: Retrieve and convert papers to readable markdown format
+- **Parameters**:
+  - paper_id: ArXiv identifier (e.g., "1706.03762")
+- **When to use**: After finding interesting papers, before reading full content
+
+### list_papers
+- **Purpose**: Display your local paper library
+- **When to use**: Check what papers you have, avoid re-downloading
+
+### read_paper
+- **Purpose**: Access full text content of downloaded papers
+- **Parameters**:
+  - paper_id: ArXiv identifier
+- **When to use**: Deep analysis, quotation, detailed study of methodology/results
+
+## Workflow Guidelines
+
+1. When asked a research question:
+   - First, search for relevant papers using search_papers
+   - Download promising papers using download_paper
+   - Read the papers thoroughly using read_paper
+   - Synthesize findings with proper citations
+
+2. Always verify claims by reading actual paper content
+3. Provide paper IDs and links (https://arxiv.org/abs/PAPER_ID)
+4. Compare and contrast findings across multiple papers when relevant
+5. Acknowledge limitations and gaps in the literature
+
+Remember: Your credibility comes from the papers you cite. Never speculate beyond what the research shows.`;
+
+// Using shared Message type for consistency across client/server
+// Note: For API compatibility, we still need to convert these to OpenAI format
 
 const app = new Hono();
 
@@ -48,6 +91,8 @@ app.use(
 		origin: "*", // Allow all origins for E2B sandbox access
 		allowMethods: ["GET", "POST", "OPTIONS"],
 		allowHeaders: ["Content-Type"],
+		exposeHeaders: ["Content-Type"],
+		credentials: false,
 	}),
 );
 
@@ -61,14 +106,14 @@ function isAgentTalking(): boolean {
 }
 
 // Helper to append message to NDJSON file
-async function appendMessageToFile(message: StoredMessage): Promise<void> {
+async function appendMessageToFile(message: Message): Promise<void> {
 	const messagesPath = path.join(process.cwd(), "messages.ndjson");
 	const line = JSON.stringify(message) + "\n";
 	await fs.appendFile(messagesPath, line, "utf-8");
 }
 
 // Helper to read all messages from NDJSON file
-async function readMessagesFromFile(): Promise<StoredMessage[]> {
+async function readMessagesFromFile(): Promise<Message[]> {
 	const messagesPath = path.join(process.cwd(), "messages.ndjson");
 	try {
 		const fileContent = await fs.readFile(messagesPath, "utf-8");
@@ -76,7 +121,7 @@ async function readMessagesFromFile(): Promise<StoredMessage[]> {
 			.trim()
 			.split("\n")
 			.filter((line) => line.length > 0)
-			.map((line) => JSON.parse(line) as StoredMessage);
+			.map((line) => JSON.parse(line) as Message);
 	} catch {
 		// File doesn't exist yet or is empty
 		return [];
@@ -95,11 +140,7 @@ async function logAgentStreamEvent(event: ResponseStreamEvent): Promise<void> {
 		// Directory already exists or can't be created
 	}
 
-	const line =
-		JSON.stringify({
-			timestamp: new Date().toISOString(),
-			event,
-		}) + "\n";
+	const line = JSON.stringify(event) + "\n";
 
 	try {
 		await fs.appendFile(logsPath, line, "utf-8");
@@ -114,12 +155,38 @@ async function logAgentStreamEvent(event: ResponseStreamEvent): Promise<void> {
 }
 
 // Helper to reconstruct conversation history as ResponseInput
-// Cast to unknown then to the target type since our StoredMessage includes assistant/tool messages
-// not strictly in ResponseInputMessageItem type (which only has user/system/developer roles)
+// Converts our Message format to OpenAI Responses API format
+// Prepends the system prompt to guide the LLM's behavior
 function reconstructHistory(
-	messages: StoredMessage[],
+	messages: Message[],
 ): ResponseCreateParams["input"] {
-	return messages as unknown as ResponseCreateParams["input"];
+	// Prepend system message with the research assistant prompt
+	const systemMessage = { role: "system" as const, content: SYSTEM_PROMPT };
+
+	// Convert our Message format to OpenAI format
+	const openAIMessages = messages.flatMap((msg) => {
+		if (msg.role === "user" || msg.role === "prompt") {
+			return { role: "user", content: msg.content };
+		} else if (msg.role === "assistant") {
+			return { role: "assistant", content: msg.content };
+		} else if (msg.role === "tool_call") {
+			// Tool calls need to be grouped into an assistant message
+			return {
+				role: "assistant",
+				content: "",
+				tool_calls: [{
+					id: msg.id,
+					type: "function",
+					function: { name: msg.name, arguments: msg.arguments }
+				}]
+			};
+		} else if (msg.role === "tool_result") {
+			return { role: "tool", tool_call_id: msg.id, content: msg.content };
+		}
+		return [];
+	});
+
+	return [systemMessage, ...openAIMessages] as unknown as ResponseCreateParams["input"];
 }
 
 app.get("/healthcheck", (c) => {
@@ -211,15 +278,20 @@ app.post("/agent/talk", async (c) => {
 		stream: true, // Enable streaming!
 	});
 
+	// Helper to send StreamAction via SSE
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const sendAction = async (stream: any, action: StreamAction) => {
+		await stream.writeSSE({
+			data: JSON.stringify(action),
+		});
+	};
+
 	// Stream SSE to client
 	return streamSSE(c, async (sseStream) => {
-		let assistantMessage = "";
-		const toolCalls: Array<{
-			id: string;
-			type: "function";
-			function: { name: string; arguments: string };
-		}> = [];
-		const toolCallArgsMap = new Map<string, string>();
+		let hasStartedText = false;
+		let currentAssistantText = "";
+		// Track MCP call items by ID to get the name later
+		const mcpCallItems = new Map<string, { name: string; arguments: string }>();
 
 		try {
 			// Iterate through streaming events
@@ -228,134 +300,111 @@ app.post("/agent/talk", async (c) => {
 				await logAgentStreamEvent(event);
 
 				await match(event)
-					.with({ type: "response.output_text.delta" }, async (e) => {
-						// Stream text chunks as they arrive
-						assistantMessage += e.delta;
-						await sseStream.writeSSE({
-							data: JSON.stringify({
-								type: "text_delta",
-								content: e.delta,
-							}),
-						});
-					})
 					.with({ type: "response.output_item.added" }, async (e) => {
-						// Tool call initiated
-						const item = e.item;
-						if (item.type === "function_call") {
-							// Initialize tool call arguments tracking
-							toolCallArgsMap.set(item.call_id, "");
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						const item = e.item as any;
 
-							await sseStream.writeSSE({
-								data: JSON.stringify({
-									type: "tool_call_start",
-									tool_name: item.name,
-									call_id: item.call_id,
-								}),
+						// Track MCP call items to get name later
+						if (item.type === "mcp_call" && item.id && item.name) {
+							mcpCallItems.set(item.id, {
+								name: item.name,
+								arguments: item.arguments || "",
+							});
+						}
+
+						// Check if this is the start of assistant text
+						if (item.type === "message" && !hasStartedText) {
+							hasStartedText = true;
+							await sendAction(sseStream, {
+								type: "ASSISTANT_TEXT_STARTED",
 							});
 						}
 					})
-					.with(
-						{ type: "response.function_call_arguments.delta" },
-						async (e) => {
-							// Stream tool arguments as they're generated
-							const currentArgs = toolCallArgsMap.get(e.item_id) || "";
-							toolCallArgsMap.set(e.item_id, currentArgs + e.delta);
+					.with({ type: "response.output_text.delta" }, async (e) => {
+						// Stream text chunks as they arrive
+						currentAssistantText += e.delta;
+						await sendAction(sseStream, {
+							type: "ASSISTANT_TEXT_DELTA",
+							delta: e.delta,
+						});
+					})
+					.with({ type: "response.output_text.done" }, async (_e) => {
+						// Assistant text streaming complete - save to messages.ndjson
+						if (currentAssistantText) {
+							await appendMessageToFile({
+								role: "assistant",
+								content: currentAssistantText,
+							});
+						}
 
-							await sseStream.writeSSE({
-								data: JSON.stringify({
-									type: "tool_args_delta",
-									delta: e.delta,
-									item_id: e.item_id,
-								}),
-							});
-						},
-					)
+						await sendAction(sseStream, {
+							type: "ASSISTANT_TEXT_DONE",
+						});
+					})
 					.with(
-						{ type: "response.function_call_arguments.done" },
+						{ type: "response.mcp_call_arguments.done" },
 						async (e) => {
-							// Tool arguments complete - save the tool call
-							toolCalls.push({
-								id: e.item_id,
-								type: "function",
-								function: {
-									name: e.name,
+							// Tool call arguments complete - save and dispatch
+							const mcpCall = mcpCallItems.get(e.item_id);
+							if (mcpCall) {
+								await appendMessageToFile({
+									role: "tool_call",
+									id: e.item_id,
+									name: mcpCall.name,
 									arguments: e.arguments,
-								},
-							});
+								});
 
-							await sseStream.writeSSE({
-								data: JSON.stringify({
-									type: "tool_call_complete",
-									name: e.name,
+								await sendAction(sseStream, {
+									type: "TOOL_CALL_ARGUMENTS_DONE",
+									toolCallId: e.item_id,
+									name: mcpCall.name,
 									arguments: e.arguments,
-								}),
-							});
+								});
+
+								log({
+									level: "info",
+									message: "Tool call saved",
+									toolCallId: e.item_id,
+									toolName: mcpCall.name,
+								});
+							}
 						},
 					)
 					.with({ type: "response.output_item.done" }, async (e) => {
-						// Check if this is a tool result (function_call_output)
-						// Note: OpenAI SDK types don't include 'function_call_output' yet,
-						// but it's returned by the Responses API when using MCP tools
-						const item = e.item as unknown as {
-							type: string;
-							call_id?: string;
-							output?: string;
-						};
-
-						if (
-							item.type === "function_call_output" &&
-							item.call_id &&
-							item.output
-						) {
-							// Save tool result immediately to messages.ndjson
+						// Tool execution complete - save result and dispatch
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						const item = e.item as any;
+						if (item.type === "mcp_call" && item.status === "completed" && item.output) {
 							await appendMessageToFile({
-								role: "tool",
-								tool_call_id: item.call_id,
+								role: "tool_result",
+								id: item.id,
 								content: item.output,
+							});
+
+							await sendAction(sseStream, {
+								type: "TOOL_RESULT_RECEIVED",
+								toolCallId: item.id,
+								output: item.output,
 							});
 
 							log({
 								level: "info",
 								message: "Tool result saved",
-								toolCallId: item.call_id,
+								toolCallId: item.id,
 								outputLength: item.output.length,
 							});
 						}
-
-						// Stream event to client
-						await sseStream.writeSSE({
-							data: JSON.stringify({
-								type: "tool_done",
-								item: e.item,
-							}),
-						});
 					})
 					.with({ type: "response.completed" }, async (e) => {
-						// Final response with all data
-						// Save assistant message with both content and tool_calls (if any)
-						// An assistant message can have both text content AND tool calls
-						// Following Groq/OpenAI format: omit content field when it's empty
-						if (assistantMessage || toolCalls.length > 0) {
-							const message: StoredMessage = {
-								role: "assistant",
-								...(assistantMessage && { content: assistantMessage }),
-								...(toolCalls.length > 0 && { tool_calls: toolCalls }),
-							};
-							await appendMessageToFile(message);
-						}
+						// Final response - signal turn completion
+						await sendAction(sseStream, {
+							type: "LLM_TURN_FINISHED",
+						});
 
 						log({
 							level: "info",
 							message: "Response completed",
-							messageLength: assistantMessage.length,
-							toolCallsCount: toolCalls.length,
-						});
-
-						await sseStream.writeSSE({
-							data: JSON.stringify({
-								type: "done",
-								usage: e.response.usage,
-							}),
+							usage: e.response.usage,
 						});
 					})
 					.with({ type: "response.failed" }, async (e) => {
@@ -364,7 +413,7 @@ app.post("/agent/talk", async (c) => {
 					.otherwise(async (e) => {
 						// Log unhandled event types for debugging
 						log({
-							level: "info",
+							level: "debug",
 							message: "Unhandled event type",
 							eventType: e.type,
 						});

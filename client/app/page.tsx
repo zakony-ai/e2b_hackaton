@@ -30,6 +30,7 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { useReducerWithCommands, type Command, type StateWithSideEffects } from "@/lib/react";
+import type { Message, StreamAction, LogEntry } from "@shared/index";
 
 interface Conversation {
 	id: string;
@@ -38,50 +39,24 @@ interface Conversation {
 	sandboxId?: string;
 }
 
-interface ToolCall {
-	id: string;
-	name: string;
-	arguments: string;
-	result: string | null; // null = waiting for result, string = received
-}
-
-type Message =
-	| { role: "user"; content: string }
-	| {
-			role: "assistant";
-			content: string;
-			tool_calls?: ToolCall[];
-			isStreaming: boolean;
-	  };
-
-interface LogEntry {
-	timestamp: string;
-	level: "info" | "warn" | "error";
-	message: string;
-	[key: string]: unknown;
-}
-
 // State
 interface State {
 	conversations: Conversation[];
 	currentConversation: Conversation | null;
 	messages: Message[];
+	isAgentTalking: boolean; // Track if we're currently receiving a stream
 	logsDialogOpen: boolean;
 	logs: LogEntry[];
 	logsLoading: boolean;
 	logsError: string | null;
 }
 
-// Actions
+// Actions - combine StreamAction with app-specific actions
 type Action =
+	| StreamAction // All stream actions from shared types
 	| { type: "ConversationsLoaded"; conversations: Conversation[] }
 	| { type: "SubmitPrompt"; text: string }
 	| { type: "SandboxCreated"; agentUrl: string; sandboxId: string }
-	| { type: "AssistantMessageStarted" }
-	| { type: "TextDelta"; content: string }
-	| { type: "ToolCallCompleted"; id: string; name: string; arguments: string }
-	| { type: "ToolResultReceived"; id: string; result: string }
-	| { type: "StreamingCompleted" }
 	| { type: "StreamingError"; error: string }
 	| { type: "SelectConversation"; conversation: Conversation }
 	| { type: "KillSandbox" }
@@ -98,6 +73,7 @@ const initialState: State = {
 	conversations: [],
 	currentConversation: null,
 	messages: [],
+	isAgentTalking: false,
 	logsDialogOpen: false,
 	logs: [],
 	logsLoading: false,
@@ -148,9 +124,6 @@ const createSandboxCommand = (): Command<Action> => async () => {
 const streamSubscription = (agentUrl: string, userPrompt: string) => (dispatch: (action: Action) => void) => {
 	(async () => {
 		try {
-			// Create empty assistant message at start
-			dispatch({ type: "AssistantMessageStarted" });
-
 			const response = await fetch(`${agentUrl}/agent/talk`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -179,28 +152,14 @@ const streamSubscription = (agentUrl: string, userPrompt: string) => (dispatch: 
 					if (line.startsWith("data: ")) {
 						const data = line.slice(6);
 						try {
-							const parsed = JSON.parse(data);
-							if (parsed.type === "text_delta") {
-								dispatch({ type: "TextDelta", content: parsed.content });
-							} else if (parsed.type === "tool_call_complete") {
-								dispatch({
-									type: "ToolCallCompleted",
-									id: parsed.call_id || parsed.id,
-									name: parsed.name,
-									arguments: parsed.arguments,
-								});
-							} else if (parsed.type === "tool_done") {
-								if (parsed.item?.type === "function_call_output") {
-									dispatch({
-										type: "ToolResultReceived",
-										id: parsed.item.call_id,
-										result: parsed.item.output,
-									});
-								}
-							} else if (parsed.type === "done") {
-								dispatch({ type: "StreamingCompleted" });
-							} else if (parsed.type === "error") {
-								dispatch({ type: "StreamingError", error: parsed.message });
+							const action = JSON.parse(data) as StreamAction | { type: "error"; message: string };
+
+							// Handle error events
+							if ("type" in action && action.type === "error") {
+								dispatch({ type: "StreamingError", error: (action as { type: "error"; message: string }).message });
+							} else {
+								// Dispatch StreamAction directly
+								dispatch(action as StreamAction);
 							}
 						} catch {
 							// Ignore JSON parse errors
@@ -278,13 +237,6 @@ const fetchLogsCommand = (sandboxId: string): Command<Action> => async () => {
 	}
 };
 
-// Helper function to find the streaming assistant message
-function findStreamingAssistantIndex(messages: Message[]): number {
-	return messages.findLastIndex(
-		(msg) => msg.role === "assistant" && msg.isStreaming
-	);
-}
-
 // Reducer
 function reducer(state: State, action: Action): StateWithSideEffects<State, Action> {
 	switch (action.type) {
@@ -322,7 +274,8 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 		case "SandboxCreated": {
 			if (!state.currentConversation) {
 				const conversationId = nanoid();
-				const userPrompt = state.messages[state.messages.length - 1]?.content || "";
+				const lastMessage = state.messages[state.messages.length - 1];
+				const userPrompt = (lastMessage?.role === "user" || lastMessage?.role === "assistant") ? lastMessage.content : "";
 
 				const newConversation: Conversation = {
 					id: conversationId,
@@ -354,7 +307,8 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 					c.id === updatedConversation.id ? updatedConversation : c
 				);
 
-				const userPrompt = state.messages[state.messages.length - 1]?.content || "";
+				const lastMessage = state.messages[state.messages.length - 1];
+				const userPrompt = (lastMessage?.role === "user" || lastMessage?.role === "assistant") ? lastMessage.content : "";
 
 				return [
 					{
@@ -370,107 +324,85 @@ function reducer(state: State, action: Action): StateWithSideEffects<State, Acti
 			}
 		}
 
-		case "AssistantMessageStarted":
+		// StreamAction handlers
+		case "ASSISTANT_TEXT_STARTED": {
+			// Add new assistant message to messages array
 			return {
 				...state,
-				messages: [...state.messages, { role: "assistant", content: "", isStreaming: true }],
+				messages: [...state.messages, { role: "assistant", content: "" }],
+				isAgentTalking: true,
 			};
+		}
 
-		case "TextDelta": {
+		case "ASSISTANT_TEXT_DELTA": {
+			// Append delta to the last assistant message
 			const messages = [...state.messages];
-			const streamingIdx = findStreamingAssistantIndex(messages);
+			const lastIdx = messages.length - 1;
 
-			if (streamingIdx !== -1) {
-				messages[streamingIdx] = {
-					...messages[streamingIdx],
-					content: messages[streamingIdx].content + action.content,
+			if (lastIdx >= 0 && messages[lastIdx].role === "assistant") {
+				messages[lastIdx] = {
+					...messages[lastIdx],
+					content: messages[lastIdx].content + action.delta,
 				};
 			}
 
 			return { ...state, messages };
 		}
 
-		case "ToolCallCompleted": {
-			const messages = [...state.messages];
-			const streamingIdx = findStreamingAssistantIndex(messages);
-
-			if (streamingIdx !== -1) {
-				const msg = messages[streamingIdx];
-				if (msg.role === "assistant") {
-					const tool_calls = msg.tool_calls || [];
-
-					messages[streamingIdx] = {
-						...msg,
-						tool_calls: [
-							...tool_calls,
-							{
-								id: action.id,
-								name: action.name,
-								arguments: action.arguments,
-								result: null,
-							},
-						],
-					};
-				}
-			}
-
-			return { ...state, messages };
+		case "ASSISTANT_TEXT_DONE": {
+			// Text streaming complete, no state change needed (message already added)
+			return state;
 		}
 
-		case "ToolResultReceived": {
-			const messages = [...state.messages];
-			const streamingIdx = findStreamingAssistantIndex(messages);
-
-			if (streamingIdx !== -1) {
-				const msg = messages[streamingIdx];
-				if (msg.role === "assistant" && msg.tool_calls) {
-					const tool_calls = msg.tool_calls.map((tc: ToolCall) =>
-						tc.id === action.id ? { ...tc, result: action.result } : tc,
-					);
-
-					messages[streamingIdx] = {
-						...msg,
-						tool_calls,
-					};
-				}
-			}
-
-			return { ...state, messages };
+		case "TOOL_CALL_ARGUMENTS_DONE": {
+			// Add tool_call message
+			return {
+				...state,
+				messages: [
+					...state.messages,
+					{
+						role: "tool_call",
+						id: action.toolCallId,
+						name: action.name,
+						arguments: action.arguments,
+					},
+				],
+			};
 		}
 
-		case "StreamingCompleted": {
-			const messages = [...state.messages];
-			const streamingIdx = findStreamingAssistantIndex(messages);
+		case "TOOL_RESULT_RECEIVED": {
+			// Add tool_result message
+			return {
+				...state,
+				messages: [
+					...state.messages,
+					{
+						role: "tool_result",
+						id: action.toolCallId,
+						content: action.output,
+					},
+				],
+			};
+		}
 
-			if (streamingIdx !== -1) {
-				const msg = messages[streamingIdx];
-				if (msg.role === "assistant") {
-					messages[streamingIdx] = {
-						...msg,
-						isStreaming: false,
-					};
-				}
-			}
-
-			return { ...state, messages };
+		case "LLM_TURN_FINISHED": {
+			// Agent turn complete
+			return {
+				...state,
+				isAgentTalking: false,
+			};
 		}
 
 		case "StreamingError": {
-			const messages = [...state.messages];
-			const streamingIdx = findStreamingAssistantIndex(messages);
-
-			if (streamingIdx !== -1) {
-				const msg = messages[streamingIdx];
-				if (msg.role === "assistant") {
-					messages[streamingIdx] = {
-						...msg,
-						content: msg.content + `\n\nError: ${action.error}`,
-						isStreaming: false,
-					};
-				}
-			}
-
-			return { ...state, messages };
+			// Add error message as assistant message
+			return {
+				...state,
+				messages: [
+					...state.messages,
+					{ role: "assistant", content: `Error: ${action.error}` },
+				],
+				isAgentTalking: false,
+			};
 		}
 
 		case "SelectConversation":
@@ -639,55 +571,70 @@ export default function Home() {
 						)}
 
 						<div className="flex-1 space-y-4 overflow-y-auto">
-							{state.messages.map((msg, idx) => (
-								<div
-									key={idx}
-									className={`rounded p-3 ${
-										msg.role === "user"
-											? "bg-blue-100 dark:bg-blue-900"
-											: "bg-gray-100 dark:bg-gray-800"
-									}`}
-								>
-									<div className="font-semibold text-sm">
-										{msg.role === "user" ? "You" : "Assistant"}
-										{msg.role === "assistant" && msg.isStreaming && " (streaming...)"}
-									</div>
-
-									{/* Text content */}
-									{msg.content && (
-										<div className="mt-1 whitespace-pre-wrap">{msg.content}</div>
-									)}
-
-									{/* Tool calls (assistant only) */}
-									{msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0 && (
-										<div className="mt-2 space-y-2">
-											{msg.tool_calls.map((tool, toolIdx) => (
-												<div
-													key={toolIdx}
-													className="border-l-2 border-purple-500 bg-purple-50 dark:bg-purple-900/20 pl-3 py-2 rounded"
-												>
-													<div className="font-mono text-sm font-semibold">
-														🔧 {tool.name}
-													</div>
-													<div className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-mono">
-														{tool.arguments}
-													</div>
-													{tool.result === null ? (
-														<div className="text-xs text-yellow-600 dark:text-yellow-400 mt-1 font-semibold">
-															⏳ Executing...
-														</div>
-													) : (
-														<div className="text-xs text-green-700 dark:text-green-400 mt-1 max-h-32 overflow-auto bg-white dark:bg-gray-800 p-2 rounded border">
-															<div className="font-semibold mb-1">✅ Result:</div>
-															<pre className="whitespace-pre-wrap">{tool.result}</pre>
-														</div>
-													)}
-												</div>
-											))}
+							{state.messages.map((msg, idx) => {
+								// Render user messages
+								if (msg.role === "user") {
+									return (
+										<div key={idx} className="rounded p-3 bg-blue-100 dark:bg-blue-900">
+											<div className="font-semibold text-sm">You</div>
+											<div className="mt-1 whitespace-pre-wrap">{msg.content}</div>
 										</div>
-									)}
-								</div>
-							))}
+									);
+								}
+
+								// Render assistant messages
+								if (msg.role === "assistant") {
+									return (
+										<div key={idx} className="rounded p-3 bg-gray-100 dark:bg-gray-800">
+											<div className="font-semibold text-sm">
+												Assistant
+												{state.isAgentTalking && idx === state.messages.length - 1 && " (streaming...)"}
+											</div>
+											{msg.content && (
+												<div className="mt-1 whitespace-pre-wrap">{msg.content}</div>
+											)}
+										</div>
+									);
+								}
+
+								// Render tool_call messages
+								if (msg.role === "tool_call") {
+									// Check if we have a corresponding tool_result
+									const toolResult = state.messages
+										.slice(idx + 1)
+										.find((m) => m.role === "tool_result" && m.id === msg.id);
+
+									return (
+										<div key={idx} className="rounded p-3 bg-purple-50 dark:bg-purple-900/20">
+											<div className="border-l-2 border-purple-500 pl-3 py-2">
+												<div className="font-mono text-sm font-semibold">
+													🔧 {msg.name}
+												</div>
+												<div className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-mono">
+													{msg.arguments}
+												</div>
+												{!toolResult || toolResult.role !== "tool_result" ? (
+													<div className="text-xs text-yellow-600 dark:text-yellow-400 mt-1 font-semibold">
+														⏳ Executing...
+													</div>
+												) : (
+													<div className="text-xs text-green-700 dark:text-green-400 mt-1 max-h-32 overflow-auto bg-white dark:bg-gray-800 p-2 rounded border">
+														<div className="font-semibold mb-1">✅ Result:</div>
+														<pre className="whitespace-pre-wrap">{toolResult.content}</pre>
+													</div>
+												)}
+											</div>
+										</div>
+									);
+								}
+
+								// Don't render tool_result messages separately (they're shown within tool_call)
+								if (msg.role === "tool_result") {
+									return null;
+								}
+
+								return null;
+							})}
 						</div>
 
 						<div className="mt-4">
@@ -695,17 +642,13 @@ export default function Home() {
 								<PromptInputBody>
 									<PromptInputTextarea
 										placeholder="Type your research question..."
-										disabled={state.messages.some(
-											(m) => m.role === "assistant" && m.isStreaming,
-										)}
+										disabled={state.isAgentTalking}
 									/>
 								</PromptInputBody>
 								<PromptInputFooter>
 									<div />
 									<PromptInputSubmit
-										disabled={state.messages.some(
-											(m) => m.role === "assistant" && m.isStreaming,
-										)}
+										disabled={state.isAgentTalking}
 									/>
 								</PromptInputFooter>
 							</PromptInput>
