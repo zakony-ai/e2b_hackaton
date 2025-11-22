@@ -25,59 +25,35 @@ import { log } from "./logger";
 import type { Message, StreamAction } from "../../shared/src/index";
 
 // System prompt for the research assistant
-const SYSTEM_PROMPT = `You are a research assistant specializing in academic paper analysis using the arXiv repository. Your primary purpose is to help users discover, analyze, and synthesize research papers from arXiv.
+const SYSTEM_PROMPT = `You are a research assistant specializing in academic paper analysis. Help users discover and analyze research papers from arXiv, PubMed, bioRxiv, and other sources.
 
-## Core Responsibilities
+## Workflow
 
-1. **Evidence-Based Responses**: EVERYTHING you say must be grounded in papers you've found and read from arXiv. Never make claims without citing specific papers.
+1. Search for papers using search_arxiv or other search tools
+2. When you receive search results, extract the "paper_id" field
+3. Use read_arxiv_paper with that exact paper_id AND save_path="/tmp"
+4. Analyze the paper content and provide a detailed response
 
-2. **Thorough Research**: Use the arXiv MCP tools to search for, download, and read papers before forming responses.
+## Critical Rule: Use Exact Paper IDs
 
-3. **Citation Required**: When referencing information, always cite the paper ID, title, and authors.
+When calling read_arxiv_paper, you MUST use the exact paper_id from your search results.
 
-## Available Tools via ArXiv MCP Server
+Example:
+- Search returns: {"paper_id": "2511.06901v1", ...}
+- You call: {"paper_id": "2511.06901v1", "save_path": "/tmp"}
+- DO NOT use any other paper_id!
 
-You have access to the following tools through the arXiv MCP server:
+## Tool Parameters
 
-### search_papers
-- **Purpose**: Find research papers via query, author, or category filters
-- **Parameters**:
-  - query: Search terms (supports author syntax: au:"Name", title: ti:, abstract: abs:)
-  - max_results: Number of results to return
-  - date_from/date_to: Filter by publication date
-  - categories: ArXiv categories like cs.AI, cs.LG, cs.CL
-- **When to use**: Starting research, finding recent papers, exploring a field
+- read_arxiv_paper requires: paper_id (from search results) and save_path="/tmp"
+- Always use save_path="/tmp" (not "./downloads" or other paths)
 
-### download_paper
-- **Purpose**: Retrieve and convert papers to readable markdown format
-- **Parameters**:
-  - paper_id: ArXiv identifier (e.g., "1706.03762")
-- **When to use**: After finding interesting papers, before reading full content
+## Response Requirements
 
-### list_papers
-- **Purpose**: Display your local paper library
-- **When to use**: Check what papers you have, avoid re-downloading
-
-### read_paper
-- **Purpose**: Access full text content of downloaded papers
-- **Parameters**:
-  - paper_id: ArXiv identifier
-- **When to use**: Deep analysis, quotation, detailed study of methodology/results
-
-## Workflow Guidelines
-
-1. When asked a research question:
-   - First, search for relevant papers using search_papers
-   - Download promising papers using download_paper
-   - Read the papers thoroughly using read_paper
-   - Synthesize findings with proper citations
-
-2. Always verify claims by reading actual paper content
-3. Provide paper IDs and links (https://arxiv.org/abs/PAPER_ID)
-4. Compare and contrast findings across multiple papers when relevant
-5. Acknowledge limitations and gaps in the literature
-
-Remember: Your credibility comes from the papers you cite. Never speculate beyond what the research shows.`;
+After reading papers, always provide a text response that:
+- Summarizes findings from the papers
+- Cites paper titles, authors, and IDs
+- Provides links (https://arxiv.org/abs/PAPER_ID)`;
 
 // Using shared Message type for consistency across client/server
 // Note: For API compatibility, we still need to convert these to OpenAI format
@@ -90,11 +66,17 @@ app.use(
 	cors({
 		origin: "*", // Allow all origins for E2B sandbox access
 		allowMethods: ["GET", "POST", "OPTIONS"],
-		allowHeaders: ["Content-Type"],
+		allowHeaders: ["Content-Type", "Authorization"],
 		exposeHeaders: ["Content-Type"],
 		credentials: false,
+		maxAge: 86400, // Cache preflight for 24 hours
 	}),
 );
+
+// Explicit OPTIONS handler for all routes
+app.options("*", (c) => {
+	return c.text("", 200);
+});
 
 // Server state
 let agentStream: AsyncIterable<ResponseStreamEvent> | null = null;
@@ -157,36 +139,58 @@ async function logAgentStreamEvent(event: ResponseStreamEvent): Promise<void> {
 // Helper to reconstruct conversation history as ResponseInput
 // Converts our Message format to OpenAI Responses API format
 // Prepends the system prompt to guide the LLM's behavior
+//
+// The input array is FLAT - messages, tool calls, and tool results are all separate items
+// at the same level, not nested inside messages.
 function reconstructHistory(
 	messages: Message[],
 ): ResponseCreateParams["input"] {
 	// Prepend system message with the research assistant prompt
-	const systemMessage = { role: "system" as const, content: SYSTEM_PROMPT };
+	const systemMessage = {
+		type: "message" as const,
+		role: "system" as const,
+		content: [{ type: "input_text" as const, text: SYSTEM_PROMPT }],
+	};
 
-	// Convert our Message format to OpenAI format
-	const openAIMessages = messages.flatMap((msg) => {
+	// Convert our Message format to OpenAI Responses API format
+	// All items (messages, tool_calls, tool_results) go into a flat array
+	const inputItems = messages.flatMap((msg) => {
 		if (msg.role === "user" || msg.role === "prompt") {
-			return { role: "user", content: msg.content };
-		} else if (msg.role === "assistant") {
-			return { role: "assistant", content: msg.content };
-		} else if (msg.role === "tool_call") {
-			// Tool calls need to be grouped into an assistant message
+			// User message
 			return {
-				role: "assistant",
-				content: "",
-				tool_calls: [{
-					id: msg.id,
-					type: "function",
-					function: { name: msg.name, arguments: msg.arguments }
-				}]
+				type: "message" as const,
+				role: "user" as const,
+				content: [{ type: "input_text" as const, text: msg.content }],
+			};
+		} else if (msg.role === "assistant") {
+			// Assistant message - only include if it has content
+			if (msg.content && msg.content.trim().length > 0) {
+				return {
+					type: "message" as const,
+					role: "assistant" as const,
+					content: [{ type: "output_text" as const, text: msg.content }],
+				};
+			}
+		} else if (msg.role === "tool_call") {
+			// Tool call - separate item in the flat array
+			return {
+				type: "function_call" as const,
+				call_id: msg.id,
+				name: msg.name,
+				arguments: msg.arguments,
 			};
 		} else if (msg.role === "tool_result") {
-			return { role: "tool", tool_call_id: msg.id, content: msg.content };
+			// Tool result - separate item in the flat array
+			return {
+				type: "function_call_output" as const,
+				call_id: msg.id,
+				output: msg.content,
+			};
 		}
 		return [];
 	});
 
-	return [systemMessage, ...openAIMessages] as unknown as ResponseCreateParams["input"];
+	return [systemMessage, ...inputItems] as unknown as ResponseCreateParams["input"];
 }
 
 app.get("/healthcheck", (c) => {
@@ -247,7 +251,7 @@ app.post("/agent/talk", async (c) => {
 	log({
 		level: "info",
 		message: "Starting Groq responses API",
-		model: "moonshotai/kimi-k2-instruct-0905",
+		model: "openai/gpt-oss-120b",
 		messageCount: messages.length,
 		hasMcp: !!mcp_url,
 	});
@@ -261,7 +265,7 @@ app.post("/agent/talk", async (c) => {
 	if (mcp_url && mcp_token) {
 		tools.push({
 			type: "mcp",
-			server_label: "e2b-mcp-gateway",
+			server_label: "e2b_mcp_gateway",
 			server_url: mcp_url,
 			headers: {
 				Authorization: `Bearer ${mcp_token}`,
@@ -272,7 +276,7 @@ app.post("/agent/talk", async (c) => {
 
 	// Start streaming response from Groq using responses API
 	agentStream = await client.responses.create({
-		model: "moonshotai/kimi-k2-instruct-0905",
+		model: "openai/gpt-oss-120b",
 		input: conversationHistory,
 		tools: tools.length > 0 ? tools : undefined,
 		stream: true, // Enable streaming!
@@ -408,7 +412,24 @@ app.post("/agent/talk", async (c) => {
 						});
 					})
 					.with({ type: "response.failed" }, async (e) => {
-						throw new Error(e.response.error?.message || "Response failed");
+						// Log the error but don't crash - send error to client
+						const errorMessage = e.response.error?.message || "Response failed";
+						const error = e.response.error as unknown as { type?: string; code?: string };
+						log({
+							level: "error",
+							message: "Response API failed",
+							errorMessage,
+							errorType: error?.type,
+							errorCode: error?.code,
+						});
+
+						await sendAction(sseStream, {
+							type: "ERROR",
+							error: errorMessage,
+						});
+
+						// Stream is done - the Responses API won't retry
+						// This is a limitation of the current implementation
 					})
 					.otherwise(async (e) => {
 						// Log unhandled event types for debugging

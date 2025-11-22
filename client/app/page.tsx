@@ -572,10 +572,15 @@ export default function Home() {
 
 						<div className="flex-1 space-y-4 overflow-y-auto">
 							{state.messages.map((msg, idx) => {
+								// Generate a stable key for each message type
+								const messageKey = msg.role === "tool_call" || msg.role === "tool_result"
+									? `${msg.role}-${msg.id}`
+									: `${msg.role}-${idx}`;
+
 								// Render user messages
 								if (msg.role === "user") {
 									return (
-										<div key={idx} className="rounded p-3 bg-blue-100 dark:bg-blue-900">
+										<div key={messageKey} className="rounded p-3 bg-blue-100 dark:bg-blue-900">
 											<div className="font-semibold text-sm">You</div>
 											<div className="mt-1 whitespace-pre-wrap">{msg.content}</div>
 										</div>
@@ -585,7 +590,7 @@ export default function Home() {
 								// Render assistant messages
 								if (msg.role === "assistant") {
 									return (
-										<div key={idx} className="rounded p-3 bg-gray-100 dark:bg-gray-800">
+										<div key={messageKey} className="rounded p-3 bg-gray-100 dark:bg-gray-800">
 											<div className="font-semibold text-sm">
 												Assistant
 												{state.isAgentTalking && idx === state.messages.length - 1 && " (streaming...)"}
@@ -600,12 +605,12 @@ export default function Home() {
 								// Render tool_call messages
 								if (msg.role === "tool_call") {
 									// Check if we have a corresponding tool_result
-									const toolResult = state.messages
-										.slice(idx + 1)
-										.find((m) => m.role === "tool_result" && m.id === msg.id);
+									const toolResult = state.messages.find(
+										(m) => m.role === "tool_result" && m.id === msg.id
+									);
 
 									return (
-										<div key={idx} className="rounded p-3 bg-purple-50 dark:bg-purple-900/20">
+										<div key={messageKey} className="rounded p-3 bg-purple-50 dark:bg-purple-900/20">
 											<div className="border-l-2 border-purple-500 pl-3 py-2">
 												<div className="font-mono text-sm font-semibold">
 													🔧 {msg.name}
@@ -613,16 +618,16 @@ export default function Home() {
 												<div className="text-xs text-gray-600 dark:text-gray-400 mt-1 font-mono">
 													{msg.arguments}
 												</div>
-												{!toolResult || toolResult.role !== "tool_result" ? (
+												{!toolResult ? (
 													<div className="text-xs text-yellow-600 dark:text-yellow-400 mt-1 font-semibold">
 														⏳ Executing...
 													</div>
-												) : (
+												) : toolResult.role === "tool_result" ? (
 													<div className="text-xs text-green-700 dark:text-green-400 mt-1 max-h-32 overflow-auto bg-white dark:bg-gray-800 p-2 rounded border">
 														<div className="font-semibold mb-1">✅ Result:</div>
 														<pre className="whitespace-pre-wrap">{toolResult.content}</pre>
 													</div>
-												)}
+												) : null}
 											</div>
 										</div>
 									);

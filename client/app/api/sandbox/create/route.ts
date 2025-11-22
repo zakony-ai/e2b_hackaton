@@ -28,13 +28,11 @@ export async function POST() {
 
 		log({ level: "info", message: "Creating E2B sandbox" });
 
-		// Create E2B sandbox with arXiv MCP server
+		// Create E2B sandbox with paper-search MCP server
 		const sandbox = await Sandbox.create({
 			apiKey: e2bApiKey,
 			mcp: {
-				arxiv: {
-					storagePath: "/home/user/papers",
-				},
+				paperSearch: {},
 			},
 			timeoutMs: 600_000, // 10 minutes
 		});

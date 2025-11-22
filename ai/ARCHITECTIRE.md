@@ -6,7 +6,7 @@
 - nextjs
 - e2b sandbox (see [example](https://github.com/e2b-dev/e2b-cookbook/blob/main/examples/mcp-groq-exa-js/index.ts))
   - kimi-k2 via groq
-  - arXiv docker MCP
+  - paper-search docker MCP (supports arXiv, PubMed, bioRxiv, and more)
   - hono server
   
 ## Project overview

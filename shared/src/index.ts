@@ -18,7 +18,9 @@ export type StreamAction =
   | { type: "ASSISTANT_TEXT_DELTA"; delta: string }
   | { type: "ASSISTANT_TEXT_DONE" }
   // Turn completion
-  | { type: "LLM_TURN_FINISHED" };
+  | { type: "LLM_TURN_FINISHED" }
+  // Error handling
+  | { type: "ERROR"; error: string };
 
 export type LogEntry = {
   timestamp: string;
