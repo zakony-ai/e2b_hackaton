@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/table";
 import { useReducerWithCommands, type Command, type StateWithSideEffects } from "@/lib/react";
 import type { Message, StreamAction, LogEntry } from "@shared/index";
+import { Markdown } from "@/components/ui/markdown";
 
 interface Conversation {
 	id: string;
@@ -648,7 +649,7 @@ export default function Home() {
 				<ResizableHandle />
 
 				<ResizablePanel defaultSize={60} minSize={30}>
-					<div className="flex h-full flex-col p-4">
+					<div className="flex h-full flex-col py-4">
 						{state.currentConversation?.sandboxId && (
 							<div className="sticky top-0 mb-4 flex items-center justify-between border-b bg-background pb-2">
 								<h2 className="font-semibold text-lg">
@@ -665,7 +666,8 @@ export default function Home() {
 							</div>
 						)}
 
-						<div className="flex-1 space-y-4 overflow-y-auto">
+						<div className="flex-1 overflow-y-auto flex justify-center">
+							<div className="w-full max-w-[800px] space-y-4">
 							{state.messages.map((msg, idx) => {
 								// Generate a stable key for each message type
 								const messageKey = msg.role === "tool_call" || msg.role === "tool_result"
@@ -685,13 +687,15 @@ export default function Home() {
 								// Render assistant messages
 								if (msg.role === "assistant") {
 									return (
-										<div key={messageKey} className="rounded p-3 bg-gray-100 dark:bg-gray-800">
+										<div key={messageKey} className="rounded p-3">
 											<div className="font-semibold text-sm">
 												Assistant
 												{state.isAgentTalking && idx === state.messages.length - 1 && " (streaming...)"}
 											</div>
 											{msg.content && (
-												<div className="mt-1 whitespace-pre-wrap">{msg.content}</div>
+												<div className="mt-1">
+													<Markdown>{msg.content}</Markdown>
+												</div>
 											)}
 										</div>
 									);
@@ -749,23 +753,26 @@ export default function Home() {
 
 								return null;
 							})}
+							</div>
 						</div>
 
-						<div className="mt-4">
-							<PromptInput onSubmit={handleSubmit}>
-								<PromptInputBody>
-									<PromptInputTextarea
-										placeholder="Type your research question..."
-										disabled={state.isAgentTalking}
-									/>
-								</PromptInputBody>
-								<PromptInputFooter>
-									<div />
-									<PromptInputSubmit
-										disabled={state.isAgentTalking}
-									/>
-								</PromptInputFooter>
-							</PromptInput>
+						<div className="flex justify-center">
+							<div className="w-full max-w-[800px] mt-4">
+								<PromptInput onSubmit={handleSubmit}>
+									<PromptInputBody>
+										<PromptInputTextarea
+											placeholder="Type your research question..."
+											disabled={state.isAgentTalking}
+										/>
+									</PromptInputBody>
+									<PromptInputFooter>
+										<div />
+										<PromptInputSubmit
+											disabled={state.isAgentTalking}
+										/>
+									</PromptInputFooter>
+								</PromptInput>
+							</div>
 						</div>
 					</div>
 				</ResizablePanel>
