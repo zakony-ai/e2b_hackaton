@@ -27,6 +27,13 @@ import type { Message, StreamAction } from "../../shared/src/index";
 // System prompt for the research assistant
 const SYSTEM_PROMPT = `You are a research assistant specializing in academic paper analysis. Help users discover and analyze research papers from arXiv, PubMed, bioRxiv, and other sources.
 
+## Critical Tool Usage Rules
+
+IMPORTANT: Only use tools that are provided to you. NEVER invent or hallucinate tool names.
+- Tool names do NOT contain special characters like <, >, |, or brackets
+- Tool names follow the pattern: paper-search-search_arxiv, paper-search-search_pubmed, etc.
+- If you're unsure about a tool name, DO NOT use it
+
 ## Workflow
 
 1. Search for papers using search_arxiv or other search tools
@@ -318,6 +325,12 @@ app.post("/agent/talk", async (c) => {
 
 	// Stream SSE to client
 	return streamSSE(c, async (sseStream) => {
+		// Set CORS headers explicitly for SSE response
+		c.header("Access-Control-Allow-Origin", "*");
+		c.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+		c.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, X-Requested-With");
+		c.header("Access-Control-Expose-Headers", "Content-Type");
+
 		let hasStartedText = false;
 		let currentAssistantText = "";
 		// Track MCP call items by ID to get the name later
@@ -405,24 +418,48 @@ app.post("/agent/talk", async (c) => {
 						// eslint-disable-next-line @typescript-eslint/no-explicit-any
 						const item = e.item as any;
 						if (item.type === "mcp_call" && item.status === "completed" && item.output) {
-							await appendMessageToFile({
-								role: "tool_result",
-								id: item.id,
-								content: item.output,
-							});
+							try {
+								log({
+									level: "info",
+									message: "Processing completed MCP call",
+									toolCallId: item.id,
+									toolName: item.name,
+									outputLength: item.output.length,
+								});
 
-							await sendAction(sseStream, {
-								type: "TOOL_RESULT_RECEIVED",
-								toolCallId: item.id,
-								output: item.output,
-							});
+								await appendMessageToFile({
+									role: "tool_result",
+									id: item.id,
+									content: item.output,
+								});
 
-							log({
-								level: "info",
-								message: "Tool result saved",
-								toolCallId: item.id,
-								outputLength: item.output.length,
-							});
+								await sendAction(sseStream, {
+									type: "TOOL_RESULT_RECEIVED",
+									toolCallId: item.id,
+									output: item.output,
+								});
+
+								// Send tool call completed event to mark tool as done in UI
+								await sendAction(sseStream, {
+									type: "TOOL_CALL_COMPLETED",
+									toolCallId: item.id,
+								});
+
+								log({
+									level: "info",
+									message: "Tool result saved and sent successfully",
+									toolCallId: item.id,
+									outputLength: item.output.length,
+								});
+							} catch (error) {
+								log({
+									level: "error",
+									message: "Failed to save/send tool result",
+									toolCallId: item.id,
+									error: error instanceof Error ? error.message : String(error),
+									stack: error instanceof Error ? error.stack : undefined,
+								});
+							}
 						}
 					})
 					.with({ type: "response.completed" }, async (e) => {

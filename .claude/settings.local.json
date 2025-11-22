@@ -13,7 +13,8 @@
       "Bash(pnpm build:server:*)",
       "Bash(pnpm typecheck:*)",
       "Bash(pnpm add:*)",
-      "Bash(pnpm lint:*)"
+      "Bash(pnpm lint:*)",
+      "Bash(npx shadcn@latest add:*)"
     ],
     "deny": [],
     "ask": []
